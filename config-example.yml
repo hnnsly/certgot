@@ -1,0 +1,72 @@
+# Email address used to register the Let's Encrypt account
+email: "admin@example.com"
+
+# URL for sending telegram notifications (shoutrrr-like template)
+telegram_url: "telegram://123456789:ABCDEF1234567890abcdef1234567890@telegram?chats=987654321&preview=No"
+
+# Path where the certs/ (for certificates) and accounts/ (for account keys) folders will be created
+storage_path: "/var/lib/certgot"
+
+# List of domains and their settings
+certificates:
+  # Example 1: Using Cloudflare as the DNS provider
+  - domain: "example.com"
+    provider: "cloudflare"
+    env:
+      CLOUDFLARE_DNS_API_TOKEN: "your-cloudflare-api-token"
+      CLOUDFLARE_PROPAGATION_TIMEOUT: 300
+      CLOUDFLARE_POLLING_INTERVAL: 15
+
+  # Example 2: Using DigitalOcean as the DNS provider
+  - domain: "myapp.io"
+    provider: "digitalocean"
+    env:
+      DO_AUTH_TOKEN: "your-digitalocean-token"
+      DO_PROPAGATION_TIMEOUT: 600
+      DO_POLLING_INTERVAL: 30
+
+  # Example 3: Using AWS Route53 as the DNS provider
+  - domain: "shop.net"
+    provider: "route53"
+    env:
+      AWS_ACCESS_KEY_ID: "AKIAEXAMPLEKEY"
+      AWS_SECRET_ACCESS_KEY: "example-secret-key"
+      AWS_REGION: "us-west-2"
+      AWS_PROPAGATION_TIMEOUT: 400
+      AWS_POLLING_INTERVAL: 20
+
+  # Example 4: Using Porkbun as the DNS provider
+  - domain: "myblog.dev"
+    provider: "porkbun"
+    env:
+      PORKBUN_API_KEY: "pk1_exampleapikey"
+      PORKBUN_SECRET_API_KEY: "sk1_examplesecretkey"
+      PORKBUN_PROPAGATION_TIMEOUT: 600
+      PORKBUN_POLLING_INTERVAL: 30
+
+  # Example 5: Using manual execution (custom script)
+  - domain: "customdomain.org"
+    provider: "exec"
+    env:
+      EXEC_PATH: "/path/to/your/custom/script.sh"
+      EXEC_PROPAGATION_TIMEOUT: 500
+      EXEC_POLLING_INTERVAL: 25
+
+  # Example 6: Using Google Cloud DNS
+  - domain: "gcloudsite.com"
+    provider: "gcloud"
+    env:
+      GOOGLE_APPLICATION_CREDENTIALS: "/path/to/your/gcloud-credentials.json"
+      GCLOUD_PROPAGATION_TIMEOUT: 300
+      GCLOUD_POLLING_INTERVAL: 15
+
+  # Example 7: Using Azure DNS
+  - domain: "azureapp.net"
+    provider: "azure"
+    env:
+      AZURE_CLIENT_ID: "your-azure-client-id"
+      AZURE_CLIENT_SECRET: "your-azure-client-secret"
+      AZURE_TENANT_ID: "your-azure-tenant-id"
+      AZURE_SUBSCRIPTION_ID: "your-azure-subscription-id"
+      AZURE_PROPAGATION_TIMEOUT: 600
+      AZURE_POLLING_INTERVAL: 30
