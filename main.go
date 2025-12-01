@@ -18,7 +18,9 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"text/template"
 	"time"
 
@@ -39,9 +41,11 @@ type Config struct {
 }
 
 type CertConfig struct {
-	Domain   string            `yaml:"domain"`
-	Provider string            `yaml:"provider"`
-	Env      map[string]string `yaml:"env"`
+	Domain      string            `yaml:"domain"`
+	Provider    string            `yaml:"provider"`
+	Env         map[string]string `yaml:"env"`
+	Permissions string            `yaml:"permissions"`
+	Group       string            `yaml:"group"`
 }
 
 // --- Report Structs ---
@@ -138,7 +142,7 @@ func processDomain(client *lego.Client, cfg CertConfig, certDir string) CheckRes
 	domainDir := filepath.Join(certDir, cfg.Domain)
 	os.MkdirAll(domainDir, 0755)
 
-	pemPath := filepath.Join(domainDir, cfg.Domain+".pem")
+	pemPath := filepath.Join(domainDir, "fullchain.pem")
 
 	daysLeft, expiry, exists := checkCertFile(pemPath)
 	if exists && daysLeft > 30 {
@@ -174,7 +178,7 @@ func processDomain(client *lego.Client, cfg CertConfig, certDir string) CheckRes
 		return CheckResult{Type: ResultError, Domain: cfg.Domain, Error: err}
 	}
 
-	if err := saveToDisk(domainDir, cfg.Domain, certs); err != nil {
+	if err := saveToDisk(domainDir, cfg.Domain, certs, cfg); err != nil {
 		return CheckResult{Type: ResultError, Domain: cfg.Domain, Error: fmt.Errorf("save failed: %w", err)}
 	}
 
@@ -199,14 +203,73 @@ func checkCertFile(path string) (int, time.Time, bool) {
 	return daysLeft, cert.NotAfter, true
 }
 
-func saveToDisk(dir, domain string, certs *certificate.Resource) error {
-	pemPath := filepath.Join(dir, domain+".pem")
-	keyPath := filepath.Join(dir, domain+".key")
+func saveToDisk(dir, domain string, certs *certificate.Resource, cfg CertConfig) error {
+	pemPath := filepath.Join(dir, "fullchain.pem")
+	keyPath := filepath.Join(dir, "privkey.pem")
 	fullChain := append(certs.Certificate, certs.IssuerCertificate...)
 	if err := os.WriteFile(pemPath, fullChain, 0600); err != nil {
 		return err
 	}
-	return os.WriteFile(keyPath, certs.PrivateKey, 0600)
+	if err := os.WriteFile(keyPath, certs.PrivateKey, 0600); err != nil {
+		return err
+	}
+
+	// Apply file access control (permissions and group)
+	if err := applyFileAccess(dir, cfg); err != nil {
+		log.Printf("Warning: could not apply access control to %s: %v", dir, err)
+	}
+	if err := applyFileAccess(pemPath, cfg); err != nil {
+		log.Printf("Warning: could not apply access control to %s: %v", pemPath, err)
+	}
+	if err := applyFileAccess(keyPath, cfg); err != nil {
+		log.Printf("Warning: could not apply access control to %s: %v", keyPath, err)
+	}
+
+	return nil
+}
+
+// applyFileAccess applies permissions and group ownership to a certificate file
+func applyFileAccess(path string, cfg CertConfig) error {
+	// Apply permissions if specified
+	if cfg.Permissions != "" {
+		mode, err := strconv.ParseUint(cfg.Permissions, 8, 32)
+		if err != nil {
+			return fmt.Errorf("invalid permissions format '%s': %w", cfg.Permissions, err)
+		}
+		if err := os.Chmod(path, os.FileMode(mode)); err != nil {
+			return fmt.Errorf("chmod failed: %w", err)
+		}
+	}
+
+	// Apply group ownership if specified
+	if cfg.Group != "" {
+		// Get current owner
+		stat, err := os.Stat(path)
+		if err != nil {
+			return fmt.Errorf("stat failed: %w", err)
+		}
+
+		// Get group ID by name
+		grp, err := user.LookupGroup(cfg.Group)
+		if err != nil {
+			return fmt.Errorf("group '%s' not found: %w", cfg.Group, err)
+		}
+
+		gid, err := strconv.Atoi(grp.Gid)
+		if err != nil {
+			return fmt.Errorf("invalid group id: %w", err)
+		}
+
+		// Get current uid from stat
+		uid := int(stat.Sys().(*syscall.Stat_t).Uid)
+
+		// Change group ownership
+		if err := os.Chown(path, uid, gid); err != nil {
+			return fmt.Errorf("chown failed: %w", err)
+		}
+	}
+
+	return nil
 }
 
 // --- Formatting & Notification (Direct API) ---

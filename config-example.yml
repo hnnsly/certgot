@@ -12,6 +12,8 @@ certificates:
   # Example 1: Using Cloudflare as the DNS provider
   - domain: "example.com"
     provider: "cloudflare"
+    permissions: "0640" # rw- r-- --- (owner can read/write, group can read, others have no access)
+    group: "www-data" # Certificate readable by www-data group
     env:
       CLOUDFLARE_DNS_API_TOKEN: "your-cloudflare-api-token"
       CLOUDFLARE_PROPAGATION_TIMEOUT: 300
@@ -20,6 +22,8 @@ certificates:
   # Example 2: Using DigitalOcean as the DNS provider
   - domain: "myapp.io"
     provider: "digitalocean"
+    permissions: "0640"
+    group: "nginx" # Certificate readable by nginx group
     env:
       DO_AUTH_TOKEN: "your-digitalocean-token"
       DO_PROPAGATION_TIMEOUT: 600
@@ -28,6 +32,7 @@ certificates:
   # Example 3: Using AWS Route53 as the DNS provider
   - domain: "shop.net"
     provider: "route53"
+    permissions: "0600" # rw- --- --- (only owner can access, most restrictive)
     env:
       AWS_ACCESS_KEY_ID: "AKIAEXAMPLEKEY"
       AWS_SECRET_ACCESS_KEY: "example-secret-key"
@@ -38,6 +43,7 @@ certificates:
   # Example 4: Using Porkbun as the DNS provider
   - domain: "myblog.dev"
     provider: "porkbun"
+    permissions: "0644" # rw- r-- r-- (world-readable, less secure)
     env:
       PORKBUN_API_KEY: "pk1_exampleapikey"
       PORKBUN_SECRET_API_KEY: "sk1_examplesecretkey"
@@ -47,6 +53,8 @@ certificates:
   # Example 5: Using manual execution (custom script)
   - domain: "customdomain.org"
     provider: "exec"
+    permissions: "0640"
+    group: "app-users" # Certificate shared with app-users group
     env:
       EXEC_PATH: "/path/to/your/custom/script.sh"
       EXEC_PROPAGATION_TIMEOUT: 500
@@ -55,6 +63,8 @@ certificates:
   # Example 6: Using Google Cloud DNS
   - domain: "gcloudsite.com"
     provider: "gcloud"
+    permissions: "0640"
+    group: "services"
     env:
       GOOGLE_APPLICATION_CREDENTIALS: "/path/to/your/gcloud-credentials.json"
       GCLOUD_PROPAGATION_TIMEOUT: 300
@@ -63,6 +73,8 @@ certificates:
   # Example 7: Using Azure DNS
   - domain: "azureapp.net"
     provider: "azure"
+    permissions: "0640"
+    group: "cert-readers"
     env:
       AZURE_CLIENT_ID: "your-azure-client-id"
       AZURE_CLIENT_SECRET: "your-azure-client-secret"
