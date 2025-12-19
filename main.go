@@ -330,13 +330,19 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 	}
 
 	token := u.User.String() // This is the "TOKEN" part before @telegram
-	// In shoutrrr, the token can be "BOT_TOKEN" or "user:pass"
-	// url.Parse treats everything before @ as Userinfo.
-	// If the format is telegram://123:ABC...@telegram, u.User.String() will return "123:ABC..." as expected.
 
-	chatID := u.Query().Get("chats")
-	if chatID == "" {
+	chatParam := u.Query().Get("chats")
+	if chatParam == "" {
 		return fmt.Errorf("missing 'chats' query param in telegram url")
+	}
+
+	// Extract chat_id and message_thread_id (if present)
+	var chatID string
+	var threadID string
+	parts := strings.Split(chatParam, ":")
+	chatID = parts[0]
+	if len(parts) > 1 {
+		threadID = parts[1]
 	}
 
 	// 2. Build the message
@@ -350,10 +356,15 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 	// 3. Send JSON request
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 
-	payload := map[string]string{
+	payload := map[string]interface{}{
 		"chat_id":    chatID,
 		"text":       messageText,
 		"parse_mode": "Markdown", // Legacy Markdown
+	}
+
+	// Add message_thread_id if present
+	if threadID != "" {
+		payload["message_thread_id"] = threadID
 	}
 
 	jsonBody, _ := json.Marshal(payload)
