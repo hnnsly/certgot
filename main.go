@@ -347,7 +347,7 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 
 	// 2. Build the message
 	var sb strings.Builder
-	sb.WriteString("*CertGOt Report*\n\n")
+	sb.WriteString(fmt.Sprintf("*CertGOt Report |* %s\n\n", escapeMarkdown(hostname)))
 	for _, r := range results {
 		sb.WriteString(formatOneLineMarkdown(r) + "\n")
 	}
