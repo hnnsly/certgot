@@ -345,9 +345,15 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 		threadID = parts[1]
 	}
 
+	// Get node FQDN
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+
 	// 2. Build the message
 	var sb strings.Builder
-	sb.WriteString("*CertGOt Report*\n\n")
+	sb.WriteString(fmt.Sprintf("*CertGOt Report |* %s\n\n", escapeMarkdown(hostname)))
 	for _, r := range results {
 		sb.WriteString(formatOneLineMarkdown(r) + "\n")
 	}
