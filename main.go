@@ -614,11 +614,12 @@ func ensureSetupPrivileges(absConfigPath string) (bool, error) {
 func promptSetupInterval(reader *bufio.Reader) (string, string, error) {
 	warnedLongInterval := false
 
+	fmt.Println("How often should certgot run?")
+	fmt.Println("Enter an interval in the format <number><d|w|m>.")
+	fmt.Println("Examples: 1d, 2w, 1m")
+
 	for {
-		fmt.Println("How often should certgot run?")
-		fmt.Println("Enter an interval in the format <number><d|w|m>.")
-		fmt.Println("Examples: 1d, 2w, 1m")
-		fmt.Print("Interval [default: 1d]: ")
+		fmt.Print("Interval [default: 2w]: ")
 
 		raw, err := reader.ReadString('\n')
 		if err != nil && err != io.EOF {
@@ -627,7 +628,7 @@ func promptSetupInterval(reader *bufio.Reader) (string, string, error) {
 
 		raw = strings.TrimSpace(raw)
 		if raw == "" {
-			raw = "1d"
+			raw = "2w"
 		}
 
 		days, systemdInterval, err := parseSetupInterval(raw)
@@ -802,7 +803,7 @@ func installStorageLayout() error {
 		mode os.FileMode
 	}{
 		{path: managedStoragePath, mode: 0755},
-		{path: filepath.Join(managedStoragePath, "certs"), mode: 0755},
+		{path: filepath.Join(managedStoragePath, "certs"), mode: 0750},
 		{path: filepath.Join(managedStoragePath, "accounts"), mode: 0700},
 	}
 
