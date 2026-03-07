@@ -12,10 +12,13 @@ import (
 	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strconv"
@@ -57,6 +60,17 @@ const (
 	ResultError
 )
 
+const (
+	managedStoragePath  = "/var/lib/certgot"
+	managedStorageOwner = "root"
+	managedStorageGroup = "certgot"
+	managedBinaryPath   = "/usr/local/bin/certgot"
+	managedConfigDir    = "/etc/certgot"
+	managedConfigPath   = "/etc/certgot/config.yml"
+	managedServicePath  = "/etc/systemd/system/certgot.service"
+	managedTimerPath    = "/etc/systemd/system/certgot.timer"
+)
+
 type CheckResult struct {
 	Type     ResultType
 	Domain   string
@@ -79,9 +93,16 @@ func (u *MyUser) GetPrivateKey() crypto.PrivateKey        { return u.key }
 // --- Main ---
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "Path to the config")
+	enforceLongOnlySetupFlag(os.Args[1:])
+
+	configPath := flag.String("config", "config.yaml", "Path to the config (alias: -c)")
+	configPathShort := flag.String("c", "", "Path to the config (shorthand for --config)")
 	setupMode := flag.Bool("setup", false, "Run the Systemd unit creation wizard")
 	flag.Parse()
+
+	if strings.TrimSpace(*configPathShort) != "" {
+		configPath = configPathShort
+	}
 
 	if *setupMode {
 		runSystemdWizard(*configPath)
@@ -99,6 +120,7 @@ func main() {
 	accountDir := filepath.Join(cfg.StoragePath, "accounts")
 	os.MkdirAll(certDir, 0755)
 	os.MkdirAll(accountDir, 0700)
+	ensureManagedStorageOwnership(cfg.StoragePath)
 
 	// Init User & Lego
 	user, err := getOrCreateUser(cfg.Email, accountDir)
@@ -127,12 +149,22 @@ func main() {
 		results = append(results, res)
 		fmt.Println(formatOneLineConsole(res))
 	}
+	ensureManagedStorageOwnership(cfg.StoragePath)
 
 	// Send Report
 	if err := sendTelegramDirect(cfg.TelegramURL, results); err != nil {
 		log.Printf("Failed to send telegram: %v", err)
 	} else {
 		log.Println("Report sent to Telegram")
+	}
+}
+
+func enforceLongOnlySetupFlag(args []string) {
+	for _, arg := range args {
+		trimmed := strings.TrimSpace(arg)
+		if strings.HasPrefix(trimmed, "-setup") && !strings.HasPrefix(trimmed, "--setup") {
+			log.Fatalf("Use --setup (single-dash -setup is not supported)")
+		}
 	}
 }
 
@@ -270,6 +302,63 @@ func applyFileAccess(path string, cfg CertConfig) error {
 	}
 
 	return nil
+}
+
+func ensureManagedStorageOwnership(storagePath string) {
+	if err := setManagedStorageOwnership(storagePath); err != nil {
+		log.Printf("Warning: could not apply ownership %s:%s to %s: %v", managedStorageOwner, managedStorageGroup, storagePath, err)
+	}
+}
+
+func setManagedStorageOwnership(storagePath string) error {
+	if filepath.Clean(storagePath) != managedStoragePath {
+		return nil
+	}
+
+	uid, gid, err := resolveUserGroupIDs(managedStorageOwner, managedStorageGroup)
+	if err != nil {
+		return err
+	}
+
+	return chownRecursive(storagePath, uid, gid)
+}
+
+func resolveUserGroupIDs(userName, groupName string) (int, int, error) {
+	usr, err := user.Lookup(userName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lookup user %q: %w", userName, err)
+	}
+
+	grp, err := user.LookupGroup(groupName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lookup group %q: %w", groupName, err)
+	}
+
+	uid, err := strconv.Atoi(usr.Uid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid uid for %q: %w", userName, err)
+	}
+
+	gid, err := strconv.Atoi(grp.Gid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid gid for %q: %w", groupName, err)
+	}
+
+	return uid, gid, nil
+}
+
+func chownRecursive(rootPath string, uid, gid int) error {
+	return filepath.WalkDir(rootPath, func(path string, _ fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+
+		if err := os.Lchown(path, uid, gid); err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
 
 // --- Formatting & Notification (Direct API) ---
@@ -428,24 +517,25 @@ func getOrCreateUser(email, dir string) (*MyUser, error) {
 
 const serviceTpl = `[Unit]
 Description=ACME DNS certGOt
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-User={{.User}}
-WorkingDirectory={{.WorkDir}}
-ExecStart={{.BinPath}} -config {{.ConfigPath}}
+ExecStart={{.BinPath}} --config {{.ConfigPath}}
 
 [Install]
 WantedBy=multi-user.target
 `
 
 const timerTpl = `[Unit]
-Description=ACME DNS certGOt daily
+Description=ACME DNS certGOt interval timer
 
 [Timer]
-OnCalendar={{.Schedule}}
+OnBootSec=5m
+OnUnitActiveSec={{.Interval}}
 Persistent=true
+Unit=certgot.service
 
 [Install]
 WantedBy=timers.target
@@ -453,57 +543,389 @@ WantedBy=timers.target
 
 func runSystemdWizard(configRelPath string) {
 	reader := bufio.NewReader(os.Stdin)
-	fmt.Println("🛠  Setup wizard for CertGOt Systemd")
+	fmt.Println("Setup wizard for CertGOt")
 	fmt.Println("----------------------------")
 
-	binPath, _ := os.Executable()
-	workDir, _ := os.Getwd()
 	absConfigPath, _ := filepath.Abs(configRelPath)
-	currentUser, _ := user.Current()
+	restarted, err := ensureSetupPrivileges(absConfigPath)
+	if err != nil {
+		log.Fatalf("Setup failed: %v", err)
+	}
+	if restarted {
+		return
+	}
 
-	fmt.Printf("Binary: %s\n", binPath)
-	fmt.Printf("User:  %s\n", currentUser.Username)
+	cfg, err := loadConfig(absConfigPath)
+	if err != nil {
+		log.Fatalf("Setup failed: could not read config %s: %v", absConfigPath, err)
+	}
+
+	intervalInput, intervalSpan, err := promptSetupInterval(reader)
+	if err != nil {
+		log.Fatalf("Setup failed: %v", err)
+	}
+
+	fmt.Printf("Config source: %s\n", absConfigPath)
+	fmt.Printf("Install path:  %s\n", managedBinaryPath)
+	fmt.Printf("Storage path:  %s\n", managedStoragePath)
+	fmt.Printf("Interval:      %s\n", intervalInput)
 	fmt.Println("----------------------------")
 
-	fmt.Println("How often should the check run?")
-	fmt.Println("💡 Tip: The application automatically checks the certificate's expiration date.")
-	fmt.Println("   Running it daily is safe and consumes minimal resources.")
-	fmt.Println("")
-	fmt.Println("Examples of schedules (systemd OnCalendar):")
-	fmt.Println(" - daily        (Once a day at 00:00)")
-	fmt.Println(" - 04:00        (Once a day at 04:00 — recommended)")
-	fmt.Println(" - weekly       (Once a week, on Monday)")
-	fmt.Println(" - Mon,Fri 04:00 (Twice a week: Mon and Fri at 04:00)")
-	fmt.Println("")
-
-	fmt.Print("Enter schedule [default: daily]: ")
-	schedule, _ := reader.ReadString('\n')
-	schedule = strings.TrimSpace(schedule)
-	if schedule == "" {
-		schedule = "daily"
+	if err := installSetup(absConfigPath, cfg, intervalSpan); err != nil {
+		log.Fatalf("Setup failed: %v", err)
 	}
 
-	data := map[string]string{
-		"User": currentUser.Username, "WorkDir": workDir,
-		"BinPath": binPath, "ConfigPath": absConfigPath, "Schedule": schedule,
+	fmt.Println("Setup completed.")
+	fmt.Printf("Binary installed: %s\n", managedBinaryPath)
+	fmt.Printf("Config installed: %s\n", managedConfigPath)
+	fmt.Printf("Timer interval:   %s\n", intervalInput)
+}
+
+func ensureSetupPrivileges(absConfigPath string) (bool, error) {
+	if os.Geteuid() == 0 {
+		return false, nil
 	}
 
-	fmt.Printf("\n✅ Files generated! Execute the following commands (as root):\n\n")
+	exePath, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("resolve executable path: %w", err)
+	}
 
-	// We use printf with quotes for heredoc or just echo
-	// Note: For the systemd timer, it's important that User is in the .service, not the .timer
+	sudoPath, err := exec.LookPath("sudo")
+	if err != nil {
+		return false, fmt.Errorf("setup requires root and sudo is not available")
+	}
 
-	serviceCmd := fmt.Sprintf("cat <<EOF > /etc/systemd/system/certgot.service\n%sEOF", renderTpl(serviceTpl, data))
-	timerCmd := fmt.Sprintf("cat <<EOF > /etc/systemd/system/certgot.timer\n%sEOF", renderTpl(timerTpl, data))
+	fmt.Println("Setup requires root privileges. Requesting sudo access...")
 
-	fmt.Println(serviceCmd)
-	fmt.Println("")
-	fmt.Println(timerCmd)
+	cmd := exec.Command(sudoPath, exePath, "--setup", "--config", absConfigPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
 
-	fmt.Println("\n# After creating the files:")
-	fmt.Println("systemctl daemon-reload")
-	fmt.Println("systemctl enable --now certgot.timer")
-	fmt.Println("systemctl list-timers --all | grep certgot")
+	if err := cmd.Run(); err != nil {
+		return true, fmt.Errorf("sudo setup failed: %w", err)
+	}
+
+	return true, nil
+}
+
+func promptSetupInterval(reader *bufio.Reader) (string, string, error) {
+	warnedLongInterval := false
+
+	fmt.Println("How often should certgot run?")
+	fmt.Println("Enter an interval in the format <number><d|w|m>.")
+	fmt.Println("Examples: 1d, 2w, 1m")
+
+	for {
+		fmt.Print("Interval [default: 2w]: ")
+
+		raw, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", "", fmt.Errorf("read interval: %w", err)
+		}
+
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			raw = "2w"
+		}
+
+		days, systemdInterval, err := parseSetupInterval(raw)
+		if err != nil {
+			fmt.Printf("Invalid interval: %v\n\n", err)
+			if err == io.EOF {
+				return "", "", err
+			}
+			continue
+		}
+
+		if days > 45 && !warnedLongInterval {
+			fmt.Println("Warning: intervals above 45 days are not recommended. Run certgot more frequently if possible.")
+			fmt.Println("Enter the interval again to confirm, or provide a shorter one.")
+			fmt.Println("")
+			warnedLongInterval = true
+			continue
+		}
+
+		return raw, systemdInterval, nil
+	}
+}
+
+func parseSetupInterval(raw string) (int, string, error) {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if len(raw) < 2 {
+		return 0, "", fmt.Errorf("expected format like 1d, 2w, or 1m")
+	}
+
+	unit := raw[len(raw)-1]
+	value, err := strconv.Atoi(raw[:len(raw)-1])
+	if err != nil || value <= 0 {
+		return 0, "", fmt.Errorf("expected a positive number before the unit")
+	}
+
+	var days int
+	switch unit {
+	case 'd':
+		days = value
+	case 'w':
+		days = value * 7
+	case 'm':
+		days = value * 30
+	default:
+		return 0, "", fmt.Errorf("unsupported unit %q; use d, w, or m", string(unit))
+	}
+
+	return days, fmt.Sprintf("%dd", days), nil
+}
+
+func installSetup(configPath string, cfg *Config, interval string) error {
+	fmt.Println("Installing binary...")
+	if err := installBinary(managedBinaryPath); err != nil {
+		return err
+	}
+
+	fmt.Println("Ensuring group exists...")
+	if err := ensureGroupExists(managedStorageGroup); err != nil {
+		return err
+	}
+
+	fmt.Println("Installing config...")
+	if err := installConfig(configPath, cfg); err != nil {
+		return err
+	}
+
+	fmt.Println("Creating storage directories...")
+	if err := installStorageLayout(); err != nil {
+		return err
+	}
+
+	fmt.Println("Writing systemd unit files...")
+	if err := installSystemdUnits(interval); err != nil {
+		return err
+	}
+
+	fmt.Println("Reloading systemd and starting timer...")
+	if err := runCommand("systemctl", "daemon-reload"); err != nil {
+		return err
+	}
+	if err := runCommand("systemctl", "enable", "--now", "certgot.timer"); err != nil {
+		return err
+	}
+	if err := runCommand("systemctl", "restart", "certgot.timer"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func installBinary(targetPath string) error {
+	sourcePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve executable path: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("create binary directory: %w", err)
+	}
+
+	if filepath.Clean(sourcePath) != filepath.Clean(targetPath) {
+		if err := copyFile(sourcePath, targetPath, 0755); err != nil {
+			return fmt.Errorf("install binary to %s: %w", targetPath, err)
+		}
+	}
+
+	if err := os.Chmod(targetPath, 0755); err != nil {
+		return fmt.Errorf("chmod binary %s: %w", targetPath, err)
+	}
+	if err := os.Chown(targetPath, 0, 0); err != nil {
+		return fmt.Errorf("chown binary %s: %w", targetPath, err)
+	}
+
+	return nil
+}
+
+func ensureGroupExists(groupName string) error {
+	if _, err := user.LookupGroup(groupName); err == nil {
+		return nil
+	}
+
+	var cmd *exec.Cmd
+	if groupaddPath, err := exec.LookPath("groupadd"); err == nil {
+		cmd = exec.Command(groupaddPath, "--system", groupName)
+	} else if addgroupPath, err := exec.LookPath("addgroup"); err == nil {
+		cmd = exec.Command(addgroupPath, "--system", groupName)
+	} else {
+		return fmt.Errorf("could not find groupadd or addgroup to create group %s", groupName)
+	}
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if _, lookupErr := user.LookupGroup(groupName); lookupErr == nil {
+			return nil
+		}
+		return fmt.Errorf("create group %s: %v: %s", groupName, err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
+}
+
+func installConfig(configPath string, cfg *Config) error {
+	if err := os.MkdirAll(managedConfigDir, 0750); err != nil {
+		return fmt.Errorf("create config directory %s: %w", managedConfigDir, err)
+	}
+	if err := os.Chmod(managedConfigDir, 0750); err != nil {
+		return fmt.Errorf("chmod config directory %s: %w", managedConfigDir, err)
+	}
+	if err := os.Chown(managedConfigDir, 0, 0); err != nil {
+		return fmt.Errorf("chown config directory %s: %w", managedConfigDir, err)
+	}
+
+	cfg.StoragePath = managedStoragePath
+	data, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal config %s: %w", configPath, err)
+	}
+
+	if err := writeFileAtomic(managedConfigPath, data, 0600); err != nil {
+		return fmt.Errorf("write config %s: %w", managedConfigPath, err)
+	}
+	if err := os.Chown(managedConfigPath, 0, 0); err != nil {
+		return fmt.Errorf("chown config %s: %w", managedConfigPath, err)
+	}
+
+	return nil
+}
+
+func installStorageLayout() error {
+	dirs := []struct {
+		path string
+		mode os.FileMode
+	}{
+		{path: managedStoragePath, mode: 0755},
+		{path: filepath.Join(managedStoragePath, "certs"), mode: 0750},
+		{path: filepath.Join(managedStoragePath, "accounts"), mode: 0700},
+	}
+
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir.path, dir.mode); err != nil {
+			return fmt.Errorf("create storage directory %s: %w", dir.path, err)
+		}
+		if err := os.Chmod(dir.path, dir.mode); err != nil {
+			return fmt.Errorf("chmod storage directory %s: %w", dir.path, err)
+		}
+	}
+
+	if err := setManagedStorageOwnership(managedStoragePath); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func installSystemdUnits(interval string) error {
+	serviceData := map[string]string{
+		"BinPath":    managedBinaryPath,
+		"ConfigPath": managedConfigPath,
+	}
+	timerData := map[string]string{
+		"Interval": interval,
+	}
+
+	if err := writeFileAtomic(managedServicePath, []byte(renderTpl(serviceTpl, serviceData)), 0644); err != nil {
+		return fmt.Errorf("write service unit %s: %w", managedServicePath, err)
+	}
+	if err := writeFileAtomic(managedTimerPath, []byte(renderTpl(timerTpl, timerData)), 0644); err != nil {
+		return fmt.Errorf("write timer unit %s: %w", managedTimerPath, err)
+	}
+	if err := os.Chown(managedServicePath, 0, 0); err != nil {
+		return fmt.Errorf("chown service unit %s: %w", managedServicePath, err)
+	}
+	if err := os.Chown(managedTimerPath, 0, 0); err != nil {
+		return fmt.Errorf("chown timer unit %s: %w", managedTimerPath, err)
+	}
+
+	return nil
+}
+
+func copyFile(sourcePath, targetPath string, mode os.FileMode) error {
+	sourceFile, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer sourceFile.Close()
+
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tempPath := tempFile.Name()
+	success := false
+	defer func() {
+		tempFile.Close()
+		if !success {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := io.Copy(tempFile, sourceFile); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, targetPath); err != nil {
+		return err
+	}
+
+	success = true
+	return nil
+}
+
+func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	tempFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+
+	tempPath := tempFile.Name()
+	success := false
+	defer func() {
+		tempFile.Close()
+		if !success {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if _, err := tempFile.Write(data); err != nil {
+		return err
+	}
+	if err := tempFile.Chmod(mode); err != nil {
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return err
+	}
+
+	success = true
+	return nil
+}
+
+func runCommand(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s %s failed: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	}
+
+	return nil
 }
 
 func renderTpl(tplStr string, data map[string]string) string {
