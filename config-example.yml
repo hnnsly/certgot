@@ -2,10 +2,13 @@
 email: "admin@example.com"
 
 # URL for sending telegram notifications (shoutrrr-like template)
-telegram_url: "telegram://123456789:ABCDEF1234567890abcdef1234567890@telegram?chats=987654321&preview=No"
+telegram_url: "telegram://123456789:ABC123def456@telegram?chats=987654321&preview=No"
 
 # Path where the certs/ (for certificates) and accounts/ (for account keys) folders will be created
 storage_path: "/var/lib/certgot"
+
+# Provider env vars depend on the lego DNS provider.
+# Check docs here: https://go-acme.github.io/lego/dns/
 
 # List of domains and their settings
 certificates:
