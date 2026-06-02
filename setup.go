@@ -21,7 +21,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=oneshot
+Type=exec
 ExecStart={{.BinPath}} --config {{.ConfigPath}}
 
 [Install]
@@ -405,6 +405,9 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := tempFile.Chmod(mode); err != nil {
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
 		return err
 	}
 	if err := tempFile.Close(); err != nil {

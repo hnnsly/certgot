@@ -33,6 +33,11 @@ func runApp(configPath string) error {
 	if err != nil {
 		return err
 	}
+	if user.Registration != nil {
+		if err := saveRegistration(filepath.Join(accountDir, "account.registration.json"), user.Registration); err != nil {
+			return fmt.Errorf("save registration: %w", err)
+		}
+	}
 
 	var results []CheckResult
 	for _, certCfg := range cfg.Certificates {

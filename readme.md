@@ -23,6 +23,12 @@ certgot --setup --config config.yml
 certgot --config /etc/certgot/config.yml
 ```
 
+## Version
+
+```bash
+certgot --version
+```
+
 ## Config
 
 Use [`config-example.yml`](/Users/daniil/Code/certgot/config-example.yml) as the base.

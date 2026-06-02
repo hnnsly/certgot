@@ -34,6 +34,14 @@ jobs:
         with:
           go-version: "1.24"
 
+      - name: Set build version
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION=dev" >> "$GITHUB_ENV"
+          fi
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -41,7 +49,7 @@ jobs:
           CGO_ENABLED: 0
         run: |
           mkdir -p build
-          go build -o build/certgot-${{ matrix.goos }}-${{ matrix.goarch }} -ldflags="-s -w" ./main.go
+          go build -o build/certgot-${{ matrix.goos }}-${{ matrix.goarch }} -ldflags="-s -w -X main.version=${VERSION}" .
 
       - name: Create tarball
         run: |

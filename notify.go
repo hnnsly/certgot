@@ -8,7 +8,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 )
+
+var telegramHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 func formatOneLineConsole(r CheckResult) string {
 	switch r.Type {
@@ -57,23 +60,9 @@ func formatOneLineMarkdown(r CheckResult) string {
 }
 
 func sendTelegramDirect(rawURL string, results []CheckResult) error {
-	u, err := url.Parse(rawURL)
+	token, chatID, threadID, err := parseTelegramURL(rawURL)
 	if err != nil {
-		return fmt.Errorf("invalid telegram url: %w", err)
-	}
-
-	token := u.User.String()
-	chatParam := u.Query().Get("chats")
-	if chatParam == "" {
-		return fmt.Errorf("missing 'chats' query param in telegram url")
-	}
-
-	var chatID string
-	var threadID string
-	parts := strings.Split(chatParam, ":")
-	chatID = parts[0]
-	if len(parts) > 1 {
-		threadID = parts[1]
+		return err
 	}
 
 	hostname, err := os.Hostname()
@@ -99,7 +88,7 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 	jsonBody, _ := json.Marshal(payload)
 	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 
-	resp, err := http.Post(apiURL, "application/json", bytes.NewBuffer(jsonBody))
+	resp, err := telegramHTTPClient.Post(apiURL, "application/json", bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return fmt.Errorf("http post failed: %w", err)
 	}
@@ -112,4 +101,25 @@ func sendTelegramDirect(rawURL string, results []CheckResult) error {
 	}
 
 	return nil
+}
+
+func parseTelegramURL(rawURL string) (token, chatID, threadID string, err error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", "", "", fmt.Errorf("invalid telegram url: %w", err)
+	}
+
+	token = u.User.String()
+	chatParam := u.Query().Get("chats")
+	if chatParam == "" {
+		return "", "", "", fmt.Errorf("missing 'chats' query param in telegram url")
+	}
+
+	parts := strings.Split(chatParam, ":")
+	chatID = parts[0]
+	if len(parts) > 1 {
+		threadID = parts[1]
+	}
+
+	return token, chatID, threadID, nil
 }
