@@ -1,6 +1,11 @@
-module github.com/hnnsly/her-bot
+module github.com/hnnsly/certgot
 
 go 1.24.2
+
+require (
+	github.com/go-acme/lego/v4 v4.28.1
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	cloud.google.com/go/auth v0.17.0 // indirect
@@ -53,7 +58,6 @@ require (
 	github.com/cenkalti/backoff/v4 v4.3.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/clbanning/mxj/v2 v2.7.0 // indirect
-	github.com/containrrr/shoutrrr v0.8.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dimchansky/utfbom v1.1.1 // indirect
 	github.com/dnsimple/dnsimple-go/v4 v4.0.0 // indirect
@@ -65,7 +69,6 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.3 // indirect
 	github.com/ghodss/yaml v1.0.0 // indirect
 	github.com/go-acme/alidns-20150109/v4 v4.6.1 // indirect
-	github.com/go-acme/lego/v4 v4.28.1 // indirect
 	github.com/go-acme/tencentclouddnspod v1.1.10 // indirect
 	github.com/go-acme/tencentedgdeone v1.1.48 // indirect
 	github.com/go-errors/errors v1.0.1 // indirect
@@ -202,5 +205,4 @@ require (
 	gopkg.in/ini.v1 v1.67.0 // indirect
 	gopkg.in/ns1/ns1-go.v2 v2.15.1 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 )

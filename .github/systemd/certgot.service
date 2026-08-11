@@ -1,0 +1,21 @@
+[Unit]
+Description=ACME DNS certgot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/certgot --config /etc/certgot/config.yml
+User=certgot
+Group=certgot
+SupplementaryGroups=www-data
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/certgot
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

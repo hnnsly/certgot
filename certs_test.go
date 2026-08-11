@@ -44,6 +44,9 @@ func TestValidateConfig(t *testing.T) {
 		{name: "duplicate domain", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare"}, {Domain: "example.com", Provider: "route53"}}}, want: "duplicate certificate domain"},
 		{name: "bad permissions", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare", Permissions: "bad"}}}, want: "permissions must be octal"},
 		{name: "too broad permissions", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare", Permissions: "1777"}}}, want: "permissions must not exceed 0777"},
+		{name: "invalid group", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare", Group: "www data"}}}, want: "group is invalid"},
+		{name: "invalid reload unit", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare", ReloadUnits: []string{"../nginx.service"}}}}, want: "reload_units"},
+		{name: "duplicate reload unit", cfg: Config{Email: valid.Email, StoragePath: valid.StoragePath, Certificates: []CertConfig{{Domain: "example.com", Provider: "cloudflare", ReloadUnits: []string{"nginx.service", " nginx.service "}}}}, want: "duplicate unit"},
 	}
 
 	for _, tt := range tests {
@@ -61,6 +64,106 @@ func TestValidateConfig(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateConfigNormalizesGroupAndReloadUnits(t *testing.T) {
+	cfg := Config{
+		Email:       "admin@example.com",
+		StoragePath: t.TempDir(),
+		Certificates: []CertConfig{{
+			Domain: "example.com", Provider: "cloudflare", Group: " www-data ", ReloadUnits: []string{" nginx.service "},
+		}},
+	}
+	if err := validateConfig(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Certificates[0].Group != "www-data" || cfg.Certificates[0].ReloadUnits[0] != "nginx.service" {
+		t.Fatalf("config was not normalized: %#v", cfg.Certificates[0])
+	}
+}
+
+func TestValidateConfigNormalizesAndRejectsDomains(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		want      string
+		wantError bool
+	}{
+		{name: "lowercase", raw: "example.com", want: "example.com"},
+		{name: "case and fqdn dot", raw: " EXAMPLE.COM. ", want: "example.com"},
+		{name: "parent traversal", raw: "../../etc", wantError: true},
+		{name: "absolute path", raw: "/etc", wantError: true},
+		{name: "slash", raw: "example.com/foo", wantError: true},
+		{name: "wildcard", raw: "*.example.com", wantError: true},
+		{name: "empty label", raw: "a..example.com", wantError: true},
+		{name: "long label", raw: strings.Repeat("a", 64) + ".example.com", wantError: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := Config{
+				Email:        "admin@example.com",
+				StoragePath:  t.TempDir(),
+				Certificates: []CertConfig{{Domain: tt.raw, Provider: "cloudflare"}},
+			}
+			err := validateConfig(&cfg)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("expected validation error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Certificates[0].Domain; got != tt.want {
+				t.Fatalf("expected normalized domain %q, got %q", tt.want, got)
+			}
+		})
+	}
+
+	duplicate := Config{
+		Email:       "admin@example.com",
+		StoragePath: t.TempDir(),
+		Certificates: []CertConfig{
+			{Domain: "example.com", Provider: "cloudflare"},
+			{Domain: "EXAMPLE.COM.", Provider: "cloudflare"},
+		},
+	}
+	if err := validateConfig(&duplicate); err == nil {
+		t.Fatal("expected normalized duplicate error")
+	}
+}
+
+func TestWithEnvironmentRestoresPreviousValues(t *testing.T) {
+	const existingKey = "CERTGOT_TEST_EXISTING_ENV"
+	const newKey = "CERTGOT_TEST_NEW_ENV"
+	t.Setenv(existingKey, "before")
+	_ = os.Unsetenv(newKey)
+
+	err := withEnvironment(map[string]string{existingKey: "during", newKey: "created"}, func() error {
+		if got := os.Getenv(existingKey); got != "during" {
+			t.Fatalf("expected temporary existing value, got %q", got)
+		}
+		if got := os.Getenv(newKey); got != "created" {
+			t.Fatalf("expected temporary new value, got %q", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv(existingKey); got != "before" {
+		t.Fatalf("expected existing value restored, got %q", got)
+	}
+	if _, exists := os.LookupEnv(newKey); exists {
+		t.Fatal("expected new environment value removed")
+	}
+}
+
+func TestWithEnvironmentRejectsInvalidName(t *testing.T) {
+	if err := withEnvironment(map[string]string{"BAD=NAME": "value"}, func() error { return nil }); err == nil {
+		t.Fatal("expected invalid environment name error")
 	}
 }
 
@@ -117,6 +220,55 @@ func TestCheckCertFile(t *testing.T) {
 	}
 }
 
+func TestCheckCertificatePairValidatesSANAndKey(t *testing.T) {
+	dir := t.TempDir()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		DNSNames:     []string{"example.com", "*.example.com"},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(60 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := &certificate.Resource{
+		Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		PrivateKey:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
+	}
+	if err := saveToDisk(dir, resource, CertConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	check := checkCertificatePair(dir, "example.com")
+	if check.status != certificateValid {
+		t.Fatalf("expected valid pair, got %s", check.status)
+	}
+
+	otherKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDER, err := x509.MarshalECPrivateKey(otherKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "current", "privkey.pem"), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: otherDER}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if check := checkCertificatePair(dir, "example.com"); check.status != certificateKeyMismatch {
+		t.Fatalf("expected key mismatch, got %s", check.status)
+	}
+}
+
 func TestWriteFileAtomic(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data.txt")
 	if err := writeFileAtomic(path, []byte("hello"), 0640); err != nil {
@@ -163,11 +315,7 @@ func TestDirectoryModeFromFileMode(t *testing.T) {
 
 func TestSaveToDiskUsesExecutableDirectoryPermissions(t *testing.T) {
 	dir := t.TempDir()
-	certs := &certificate.Resource{
-		Certificate:       []byte("certificate"),
-		IssuerCertificate: []byte("issuer"),
-		PrivateKey:        []byte("key"),
-	}
+	certs := newTestCertificateResource(t, "example.com")
 
 	if err := saveToDisk(dir, certs, CertConfig{Permissions: "0640"}); err != nil {
 		t.Fatal(err)
@@ -189,6 +337,59 @@ func TestSaveToDiskUsesExecutableDirectoryPermissions(t *testing.T) {
 		if stat.Mode().Perm() != 0640 {
 			t.Fatalf("expected %s mode 0640, got %o", name, stat.Mode().Perm())
 		}
+	}
+}
+
+func TestSaveToDiskKeepsCurrentReleaseOnInvalidResource(t *testing.T) {
+	dir := t.TempDir()
+	valid := newTestCertificateResource(t, "example.com")
+	if err := saveToDisk(dir, valid, CertConfig{Domain: "example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	currentBefore, err := filepath.EvalSymlinks(filepath.Join(dir, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid := &certificate.Resource{Certificate: []byte("not a certificate"), PrivateKey: []byte("not a key")}
+	if err := saveToDisk(dir, invalid, CertConfig{Domain: "example.com"}); err == nil {
+		t.Fatal("expected invalid resource to fail")
+	}
+	currentAfter, err := filepath.EvalSymlinks(filepath.Join(dir, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentAfter != currentBefore {
+		t.Fatalf("current release changed after failed publish: %s -> %s", currentBefore, currentAfter)
+	}
+	if check := checkCertificatePair(dir, "example.com"); check.status != certificateValid {
+		t.Fatalf("previous release is no longer valid: %s", check.status)
+	}
+}
+
+func newTestCertificateResource(t *testing.T, domain string) *certificate.Resource {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(now.UnixNano()),
+		DNSNames:     []string{domain, "*." + domain},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(60 * 24 * time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &certificate.Resource{
+		Certificate: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		PrivateKey:  pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}),
 	}
 }
 

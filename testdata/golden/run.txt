@@ -1,0 +1,3 @@
+✓ example.com (100d left)
+1 certificates checked: 1 valid, 0 renewed, 0 skipped, 0 failed
+Completed in 2s

@@ -1,0 +1,33 @@
+{
+  "operation": "status",
+  "results": [
+    {
+      "domain": "valid.example.com",
+      "status": "valid",
+      "expiry": "2030-01-01T00:00:00Z",
+      "days_left": 100,
+      "provider": "cloudflare",
+      "release_path": "/var/lib/certgot/certs/valid.example.com/releases/one"
+    },
+    {
+      "domain": "future.example.com",
+      "status": "not-yet-valid",
+      "provider": "cloudflare"
+    },
+    {
+      "domain": "wrong.example.com",
+      "status": "wrong-domain",
+      "provider": "cloudflare"
+    },
+    {
+      "domain": "mismatch.example.com",
+      "status": "key-mismatch",
+      "provider": "cloudflare"
+    },
+    {
+      "domain": "renew.example.com",
+      "status": "renewal",
+      "provider": "cloudflare"
+    }
+  ]
+}

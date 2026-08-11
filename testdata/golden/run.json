@@ -1,0 +1,19 @@
+{
+  "operation": "run",
+  "results": [
+    {
+      "domain": "example.com",
+      "status": "valid",
+      "days_left": 100,
+      "expiry": "2030-01-01T00:00:00Z"
+    }
+  ],
+  "summary": {
+    "checked": 1,
+    "valid": 1,
+    "renewed": 0,
+    "skipped": 0,
+    "failed": 0
+  },
+  "duration": "2s"
+}
