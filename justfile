@@ -32,8 +32,5 @@ tidy-check:
 build:
 	go build .
 
-integration:
-	TMPDIR=/private/tmp integration/run.sh
-
 systemd-verify:
 	if command -v systemd-analyze >/dev/null 2>&1; then systemd-analyze verify .github/systemd/certgot.service .github/systemd/certgot.timer; else echo "systemd-analyze unavailable; run on Linux"; fi
