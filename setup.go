@@ -2,34 +2,49 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
 
+	internalstorage "github.com/hnnsly/certgot/internal/storage"
 	"gopkg.in/yaml.v3"
 )
 
 const serviceTpl = `[Unit]
-Description=ACME DNS certGOt
+Description=ACME DNS certgot
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=exec
 ExecStart={{.BinPath}} --config {{.ConfigPath}}
+User=certgot
+Group=certgot
+{{if .SupplementaryGroups}}SupplementaryGroups={{.SupplementaryGroups}}
+{{end}}{{if .EnvironmentFile}}EnvironmentFile={{.EnvironmentFile}}
+{{end}}UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/certgot
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
 `
 
 const timerTpl = `[Unit]
-Description=ACME DNS certGOt interval timer
+Description=ACME DNS certgot interval timer
 
 [Timer]
 OnBootSec=5m
@@ -41,28 +56,46 @@ Unit=certgot.service
 WantedBy=timers.target
 `
 
-func runSystemdWizard(configRelPath string) {
-	reader := bufio.NewReader(os.Stdin)
+func runSystemdWizard(configRelPath, setupInterval string, confirmLong, nonInteractive bool) error {
+	if err := validateSetupMode(nonInteractive, setupInterval, os.Geteuid()); err != nil {
+		return err
+	}
 	fmt.Println("Setup wizard for CertGOt")
 	fmt.Println("----------------------------")
 
-	absConfigPath, _ := filepath.Abs(configRelPath)
-	restarted, err := ensureSetupPrivileges(absConfigPath)
+	absConfigPath, err := filepath.Abs(configRelPath)
 	if err != nil {
-		panic(fmt.Sprintf("Setup failed: %v", err))
+		return fmt.Errorf("resolve config path: %w", err)
 	}
-	if restarted {
-		return
-	}
-
 	cfg, err := loadConfig(absConfigPath)
 	if err != nil {
-		panic(fmt.Sprintf("Setup failed: could not read config %s: %v", absConfigPath, err))
+		if os.Geteuid() == 0 || !errors.Is(err, os.ErrPermission) {
+			return fmt.Errorf("could not read config %s: %w", absConfigPath, err)
+		}
+		restarted, privilegeErr := ensureSetupPrivileges(absConfigPath, setupInterval, confirmLong, nil)
+		if privilegeErr != nil {
+			return privilegeErr
+		}
+		if restarted {
+			return nil
+		}
+		return fmt.Errorf("could not read config %s: %w", absConfigPath, err)
+	}
+	restarted, err := ensureSetupPrivileges(absConfigPath, setupInterval, confirmLong, configEnvironmentReferences(cfg))
+	if err != nil {
+		return err
+	}
+	if restarted {
+		return nil
 	}
 
-	intervalInput, intervalSpan, err := promptSetupInterval(reader)
+	var reader *bufio.Reader
+	if !nonInteractive {
+		reader = bufio.NewReader(os.Stdin)
+	}
+	intervalInput, intervalSpan, err := resolveSetupInterval(reader, setupInterval, confirmLong, nonInteractive)
 	if err != nil {
-		panic(fmt.Sprintf("Setup failed: %v", err))
+		return err
 	}
 
 	fmt.Printf("Config source: %s\n", absConfigPath)
@@ -72,16 +105,50 @@ func runSystemdWizard(configRelPath string) {
 	fmt.Println("----------------------------")
 
 	if err := installSetup(absConfigPath, cfg, intervalSpan); err != nil {
-		panic(fmt.Sprintf("Setup failed: %v", err))
+		return err
 	}
 
 	fmt.Println("Setup completed.")
 	fmt.Printf("Binary installed: %s\n", managedBinaryPath)
 	fmt.Printf("Config installed: %s\n", managedConfigPath)
 	fmt.Printf("Timer interval:   %s\n", intervalInput)
+	return nil
 }
 
-func ensureSetupPrivileges(absConfigPath string) (bool, error) {
+func validateSetupMode(nonInteractive bool, setupInterval string, euid int) error {
+	if !nonInteractive {
+		return nil
+	}
+	if strings.TrimSpace(setupInterval) == "" {
+		return fmt.Errorf("--non-interactive requires --setup-interval")
+	}
+	if euid != 0 {
+		return fmt.Errorf("non-interactive setup requires root; run with sudo")
+	}
+	return nil
+}
+
+func resolveSetupInterval(reader *bufio.Reader, setupInterval string, confirmLong, nonInteractive bool) (string, string, error) {
+	if strings.TrimSpace(setupInterval) == "" {
+		if nonInteractive {
+			return "", "", fmt.Errorf("--non-interactive requires --setup-interval")
+		}
+		if reader == nil {
+			return "", "", fmt.Errorf("setup input is unavailable")
+		}
+		return promptSetupInterval(reader)
+	}
+	days, intervalSpan, err := parseSetupInterval(setupInterval)
+	if err != nil {
+		return "", "", err
+	}
+	if days > 45 && !confirmLong {
+		return "", "", fmt.Errorf("intervals above 45 days require --yes")
+	}
+	return strings.TrimSpace(setupInterval), intervalSpan, nil
+}
+
+func ensureSetupPrivileges(absConfigPath, setupInterval string, confirmLong bool, preserveEnvironment []string) (bool, error) {
 	if os.Geteuid() == 0 {
 		return false, nil
 	}
@@ -98,7 +165,18 @@ func ensureSetupPrivileges(absConfigPath string) (bool, error) {
 
 	fmt.Println("Setup requires root privileges. Requesting sudo access...")
 
-	cmd := exec.Command(sudoPath, exePath, "--setup", "--config", absConfigPath)
+	args := make([]string, 0, 8)
+	if len(preserveEnvironment) > 0 {
+		args = append(args, "--preserve-env="+strings.Join(preserveEnvironment, ","))
+	}
+	args = append(args, exePath, "--setup", "--config", absConfigPath)
+	if strings.TrimSpace(setupInterval) != "" {
+		args = append(args, "--setup-interval", setupInterval)
+	}
+	if confirmLong {
+		args = append(args, "--yes")
+	}
+	cmd := exec.Command(sudoPath, args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -109,6 +187,14 @@ func ensureSetupPrivileges(absConfigPath string) (bool, error) {
 	}
 
 	return true, nil
+}
+
+func configEnvironmentReferences(cfg *Config) []string {
+	name, isReference, err := environmentReferenceName(telegramConfigValue(cfg))
+	if err != nil || !isReference {
+		return nil
+	}
+	return []string{name}
 }
 
 func promptSetupInterval(reader *bufio.Reader) (string, string, error) {
@@ -180,6 +266,14 @@ func parseSetupInterval(raw string) (int, string, error) {
 }
 
 func installSetup(configPath string, cfg *Config, interval string) error {
+	if err := validateManagedReloadPolicy(cfg); err != nil {
+		return err
+	}
+	consumerGroups, err := configuredConsumerGroups(cfg, user.LookupGroup)
+	if err != nil {
+		return err
+	}
+
 	fmt.Println("Installing binary...")
 	if err := installBinary(managedBinaryPath); err != nil {
 		return err
@@ -187,6 +281,9 @@ func installSetup(configPath string, cfg *Config, interval string) error {
 
 	fmt.Println("Ensuring group exists...")
 	if err := ensureGroupExists(managedStorageGroup); err != nil {
+		return err
+	}
+	if err := ensureUserExists(managedRuntimeUser, managedStorageGroup); err != nil {
 		return err
 	}
 
@@ -201,7 +298,8 @@ func installSetup(configPath string, cfg *Config, interval string) error {
 	}
 
 	fmt.Println("Writing systemd unit files...")
-	if err := installSystemdUnits(interval); err != nil {
+	telegramEnvironment := telegramConfigValue(cfg) != ""
+	if err := installSystemdUnits(interval, consumerGroups, telegramEnvironment); err != nil {
 		return err
 	}
 
@@ -216,6 +314,18 @@ func installSetup(configPath string, cfg *Config, interval string) error {
 		return err
 	}
 
+	return nil
+}
+
+func validateManagedReloadPolicy(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	for _, cert := range cfg.Certificates {
+		if len(cert.ReloadUnits) > 0 {
+			return fmt.Errorf("reload_units for %s are disabled in managed mode; use an external root-owned systemd path/service or remove reload_units", cert.Domain)
+		}
+	}
 	return nil
 }
 
@@ -270,6 +380,29 @@ func ensureGroupExists(groupName string) error {
 	return nil
 }
 
+func ensureUserExists(userName, groupName string) error {
+	if _, err := user.Lookup(userName); err == nil {
+		return nil
+	}
+	const noLoginShell = "/usr/sbin/nologin"
+	var cmd *exec.Cmd
+	if useraddPath, err := exec.LookPath("useradd"); err == nil {
+		cmd = exec.Command(useraddPath, "--system", "--no-create-home", "--shell", noLoginShell, "--gid", groupName, userName)
+	} else if adduserPath, err := exec.LookPath("adduser"); err == nil {
+		cmd = exec.Command(adduserPath, "--system", "--no-create-home", "--shell", noLoginShell, "--ingroup", groupName, userName)
+	} else {
+		return fmt.Errorf("could not find useradd or adduser to create user %s", userName)
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if _, lookupErr := user.Lookup(userName); lookupErr == nil {
+			return nil
+		}
+		return fmt.Errorf("create user %s: %v: %s", userName, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func installConfig(configPath string, cfg *Config) error {
 	if err := os.MkdirAll(managedConfigDir, 0750); err != nil {
 		return fmt.Errorf("create config directory %s: %w", managedConfigDir, err)
@@ -277,24 +410,148 @@ func installConfig(configPath string, cfg *Config) error {
 	if err := os.Chmod(managedConfigDir, 0750); err != nil {
 		return fmt.Errorf("chmod config directory %s: %w", managedConfigDir, err)
 	}
-	if err := os.Chown(managedConfigDir, 0, 0); err != nil {
+	group, err := user.Lookup(managedStorageGroup)
+	if err != nil {
+		return fmt.Errorf("lookup runtime group: %w", err)
+	}
+	gid, err := strconv.Atoi(group.Gid)
+	if err != nil {
+		return fmt.Errorf("invalid runtime group id: %w", err)
+	}
+	if err := os.Chown(managedConfigDir, 0, gid); err != nil {
 		return fmt.Errorf("chown config directory %s: %w", managedConfigDir, err)
 	}
+	if err := os.MkdirAll(managedSecretsDir, 0750); err != nil {
+		return fmt.Errorf("create secrets directory %s: %w", managedSecretsDir, err)
+	}
+	if err := os.Chmod(managedSecretsDir, 0750); err != nil {
+		return fmt.Errorf("chmod secrets directory %s: %w", managedSecretsDir, err)
+	}
+	if err := os.Chown(managedSecretsDir, 0, gid); err != nil {
+		return fmt.Errorf("chown secrets directory %s: %w", managedSecretsDir, err)
+	}
 
-	cfg.StoragePath = managedStoragePath
-	data, err := yaml.Marshal(cfg)
+	installedConfig, err := prepareManagedConfig(cfg, managedSecretsDir, gid, writeEnvironmentFile)
+	if err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(installedConfig)
 	if err != nil {
 		return fmt.Errorf("marshal config %s: %w", configPath, err)
 	}
 
+	if err := backupExistingFile(managedConfigPath); err != nil {
+		return fmt.Errorf("backup config %s: %w", managedConfigPath, err)
+	}
 	if err := writeFileAtomic(managedConfigPath, data, 0600); err != nil {
 		return fmt.Errorf("write config %s: %w", managedConfigPath, err)
 	}
-	if err := os.Chown(managedConfigPath, 0, 0); err != nil {
+	if err := os.Chmod(managedConfigPath, 0640); err != nil {
+		return fmt.Errorf("chmod config %s: %w", managedConfigPath, err)
+	}
+	if err := os.Chown(managedConfigPath, 0, gid); err != nil {
 		return fmt.Errorf("chown config %s: %w", managedConfigPath, err)
 	}
 
 	return nil
+}
+
+type managedSecretWriter func(path string, values map[string]string, gid int) error
+
+func prepareManagedConfig(cfg *Config, secretsDir string, gid int, writeSecret managedSecretWriter) (*Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	installed := *cfg
+	installed.StoragePath = managedStoragePath
+	installed.Certificates = append([]CertConfig(nil), cfg.Certificates...)
+	for index := range installed.Certificates {
+		source := cfg.Certificates[index]
+		cert := &installed.Certificates[index]
+		values := map[string]string{}
+		if source.EnvFile != "" {
+			fileValues, err := loadEnvironmentFile(source.EnvFile)
+			if err != nil {
+				return nil, fmt.Errorf("load env_file for %s: %w", source.Domain, err)
+			}
+			values = mergeEnvironment(values, fileValues)
+		}
+		values = mergeEnvironment(values, source.Env)
+		if source.EnvFile == "" && len(source.Env) == 0 {
+			continue
+		}
+		envPath := filepath.Join(secretsDir, fmt.Sprintf("%02d-%s.env", index, source.Domain))
+		if err := writeSecret(envPath, values, gid); err != nil {
+			return nil, err
+		}
+		cert.EnvFile = envPath
+		cert.Env = nil
+	}
+	telegramValue := telegramConfigValue(cfg)
+	if telegramValue != "" {
+		resolved, err := resolveEnvironmentReference(telegramValue)
+		if err != nil {
+			return nil, fmt.Errorf("resolve Telegram environment reference: %w", err)
+		}
+		if _, _, _, err := parseTelegramURL(resolved); err != nil {
+			return nil, fmt.Errorf("invalid Telegram URL: %w", err)
+		}
+		name, isReference, err := environmentReferenceName(telegramValue)
+		if err != nil {
+			return nil, err
+		}
+		if !isReference {
+			name = "CERTGOT_TELEGRAM_URL"
+			if installed.Notifications != nil && strings.TrimSpace(installed.Notifications.TelegramURL) != "" {
+				notifications := *installed.Notifications
+				notifications.TelegramURL = "${" + name + "}"
+				installed.Notifications = &notifications
+				installed.TelegramURL = ""
+			} else {
+				installed.TelegramURL = "${" + name + "}"
+			}
+		} else if installed.Notifications != nil && strings.TrimSpace(installed.Notifications.TelegramURL) != "" {
+			installed.TelegramURL = ""
+		}
+		if err := writeSecret(filepath.Join(secretsDir, filepath.Base(managedTelegramEnvPath)), map[string]string{name: resolved}, gid); err != nil {
+			return nil, err
+		}
+	}
+	return &installed, nil
+}
+
+func writeEnvironmentFile(path string, values map[string]string, gid int) error {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	var content strings.Builder
+	for _, key := range keys {
+		if !validEnvironmentName(key) || strings.ContainsAny(values[key], "\x00\n\r") {
+			return fmt.Errorf("invalid environment file value for %q", key)
+		}
+		content.WriteString(key)
+		content.WriteByte('=')
+		content.WriteString(values[key])
+		content.WriteByte('\n')
+	}
+	if err := writeFileAtomic(path, []byte(content.String()), 0640); err != nil {
+		return fmt.Errorf("write environment file %s: %w", path, err)
+	}
+	if err := os.Chown(path, 0, gid); err != nil {
+		return fmt.Errorf("chown environment file %s: %w", path, err)
+	}
+	return nil
+}
+
+func backupExistingFile(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return copyFile(path, path+".bak", 0600)
 }
 
 func installStorageLayout() error {
@@ -323,19 +580,39 @@ func installStorageLayout() error {
 	return nil
 }
 
-func installSystemdUnits(interval string) error {
+func installSystemdUnits(interval string, consumerGroups []string, telegramEnvironment bool) error {
+	telegramEnvironmentFile := ""
+	if telegramEnvironment {
+		telegramEnvironmentFile = managedTelegramEnvPath
+	}
 	serviceData := map[string]string{
-		"BinPath":    managedBinaryPath,
-		"ConfigPath": managedConfigPath,
+		"BinPath":             managedBinaryPath,
+		"ConfigPath":          managedConfigPath,
+		"SupplementaryGroups": strings.Join(consumerGroups, " "),
+		"EnvironmentFile":     telegramEnvironmentFile,
 	}
 	timerData := map[string]string{
 		"Interval": interval,
 	}
 
-	if err := writeFileAtomic(managedServicePath, []byte(renderTpl(serviceTpl, serviceData)), 0644); err != nil {
+	serviceText, err := renderTpl(serviceTpl, serviceData)
+	if err != nil {
+		return fmt.Errorf("render service unit: %w", err)
+	}
+	timerText, err := renderTpl(timerTpl, timerData)
+	if err != nil {
+		return fmt.Errorf("render timer unit: %w", err)
+	}
+	if err := backupExistingFile(managedServicePath); err != nil {
+		return fmt.Errorf("backup service unit: %w", err)
+	}
+	if err := backupExistingFile(managedTimerPath); err != nil {
+		return fmt.Errorf("backup timer unit: %w", err)
+	}
+	if err := writeFileAtomic(managedServicePath, []byte(serviceText), 0644); err != nil {
 		return fmt.Errorf("write service unit %s: %w", managedServicePath, err)
 	}
-	if err := writeFileAtomic(managedTimerPath, []byte(renderTpl(timerTpl, timerData)), 0644); err != nil {
+	if err := writeFileAtomic(managedTimerPath, []byte(timerText), 0644); err != nil {
 		return fmt.Errorf("write timer unit %s: %w", managedTimerPath, err)
 	}
 	if err := os.Chown(managedServicePath, 0, 0); err != nil {
@@ -346,6 +623,44 @@ func installSystemdUnits(interval string) error {
 	}
 
 	return nil
+}
+
+var systemGroupNamePattern = regexp.MustCompile(`^[a-z_][a-z0-9_-]*[$]?$`)
+
+func validSystemGroupName(name string) bool {
+	return len(name) <= 32 && systemGroupNamePattern.MatchString(name)
+}
+
+func configuredConsumerGroups(cfg *Config, lookup func(string) (*user.Group, error)) ([]string, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("config is required")
+	}
+	seen := make(map[string]struct{})
+	for _, cert := range cfg.Certificates {
+		groupName := strings.TrimSpace(cert.Group)
+		if groupName == "" {
+			continue
+		}
+		if !validSystemGroupName(groupName) {
+			return nil, fmt.Errorf("invalid certificate consumer group %q", groupName)
+		}
+		if groupName == managedStorageGroup {
+			continue
+		}
+		if _, exists := seen[groupName]; exists {
+			continue
+		}
+		if _, err := lookup(groupName); err != nil {
+			return nil, fmt.Errorf("certificate consumer group %q does not exist: %w", groupName, err)
+		}
+		seen[groupName] = struct{}{}
+	}
+	groups := make([]string, 0, len(seen))
+	for groupName := range seen {
+		groups = append(groups, groupName)
+	}
+	sort.Strings(groups)
+	return groups, nil
 }
 
 func copyFile(sourcePath, targetPath string, mode os.FileMode) error {
@@ -381,44 +696,16 @@ func copyFile(sourcePath, targetPath string, mode os.FileMode) error {
 	if err := os.Rename(tempPath, targetPath); err != nil {
 		return err
 	}
+	if err := syncDirectory(filepath.Dir(targetPath)); err != nil {
+		return err
+	}
 
 	success = true
 	return nil
 }
 
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
-	tempFile, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-
-	tempPath := tempFile.Name()
-	success := false
-	defer func() {
-		_ = tempFile.Close()
-		if !success {
-			_ = os.Remove(tempPath)
-		}
-	}()
-
-	if _, err := tempFile.Write(data); err != nil {
-		return err
-	}
-	if err := tempFile.Chmod(mode); err != nil {
-		return err
-	}
-	if err := tempFile.Sync(); err != nil {
-		return err
-	}
-	if err := tempFile.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tempPath, path); err != nil {
-		return err
-	}
-
-	success = true
-	return nil
+	return internalstorage.WriteFileAtomic(path, data, mode)
 }
 
 func runCommand(name string, args ...string) error {
@@ -430,9 +717,14 @@ func runCommand(name string, args ...string) error {
 	return nil
 }
 
-func renderTpl(tplStr string, data map[string]string) string {
-	t, _ := template.New("t").Parse(tplStr)
+func renderTpl(tplStr string, data map[string]string) (string, error) {
+	t, err := template.New("t").Parse(tplStr)
+	if err != nil {
+		return "", err
+	}
 	var sb strings.Builder
-	_ = t.Execute(&sb, data)
-	return sb.String()
+	if err := t.Execute(&sb, data); err != nil {
+		return "", err
+	}
+	return sb.String(), nil
 }

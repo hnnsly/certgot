@@ -8,18 +8,28 @@ import (
 )
 
 type Config struct {
-	Email        string       `yaml:"email"`
-	TelegramURL  string       `yaml:"telegram_url"`
-	StoragePath  string       `yaml:"storage_path"`
-	Certificates []CertConfig `yaml:"certificates"`
+	Email            string              `yaml:"email"`
+	TelegramURL      string              `yaml:"telegram_url,omitempty"`
+	StoragePath      string              `yaml:"storage_path"`
+	RenewBefore      string              `yaml:"renew_before,omitempty"`
+	ACMEDirectoryURL string              `yaml:"acme_directory_url,omitempty"`
+	Notifications    *NotificationConfig `yaml:"notifications,omitempty"`
+	Certificates     []CertConfig        `yaml:"certificates"`
+}
+
+type NotificationConfig struct {
+	On          []string `yaml:"on,omitempty"`
+	TelegramURL string   `yaml:"telegram_url,omitempty"`
 }
 
 type CertConfig struct {
 	Domain      string            `yaml:"domain"`
 	Provider    string            `yaml:"provider"`
-	Env         map[string]string `yaml:"env"`
+	Env         map[string]string `yaml:"env,omitempty"`
+	EnvFile     string            `yaml:"env_file,omitempty"`
 	Permissions string            `yaml:"permissions"`
 	Group       string            `yaml:"group"`
+	ReloadUnits []string          `yaml:"reload_units,omitempty"`
 }
 
 type ResultType int
@@ -31,14 +41,18 @@ const (
 )
 
 const (
-	managedStoragePath  = "/var/lib/certgot"
-	managedStorageOwner = "root"
-	managedStorageGroup = "certgot"
-	managedBinaryPath   = "/usr/local/bin/certgot"
-	managedConfigDir    = "/etc/certgot"
-	managedConfigPath   = "/etc/certgot/config.yml"
-	managedServicePath  = "/etc/systemd/system/certgot.service"
-	managedTimerPath    = "/etc/systemd/system/certgot.timer"
+	managedStoragePath       = "/var/lib/certgot"
+	managedStorageOwner      = "certgot"
+	managedStorageGroup      = "certgot"
+	managedRuntimeUser       = "certgot"
+	managedBinaryPath        = "/usr/local/bin/certgot"
+	managedConfigDir         = "/etc/certgot"
+	managedConfigPath        = "/etc/certgot/config.yml"
+	managedSecretsDir        = "/etc/certgot/secrets"
+	managedTelegramEnvPath   = "/etc/certgot/secrets/telegram.env"
+	managedServicePath       = "/etc/systemd/system/certgot.service"
+	managedTimerPath         = "/etc/systemd/system/certgot.timer"
+	certificateRenewalWindow = 30 * 24 * time.Hour
 )
 
 type CheckResult struct {

@@ -1,0 +1,10 @@
+email: admin@example.com
+storage_path: ./testdata/storage
+renew_before: 720h
+acme_directory_url: https://127.0.0.1:14000/dir
+certificates:
+  - domain: example.com
+    provider: cloudflare
+    env:
+      CLOUDFLARE_DNS_API_TOKEN: test-token-for-local-doctor
+    permissions: "0640"

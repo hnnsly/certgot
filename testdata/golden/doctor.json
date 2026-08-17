@@ -1,0 +1,17 @@
+{
+  "operation": "doctor",
+  "checks": [
+    {
+      "name": "config",
+      "status": "ok",
+      "message": "config valid"
+    },
+    {
+      "name": "provider",
+      "status": "warning",
+      "message": "credentials missing",
+      "domain": "example.com",
+      "remediation": "set env_file"
+    }
+  ]
+}

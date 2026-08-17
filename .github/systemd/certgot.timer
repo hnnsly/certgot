@@ -1,0 +1,11 @@
+[Unit]
+Description=ACME DNS certgot interval timer
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=14d
+Persistent=true
+Unit=certgot.service
+
+[Install]
+WantedBy=timers.target

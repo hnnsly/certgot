@@ -1,0 +1,10 @@
+{
+  "operation": "renew",
+  "results": [
+    {
+      "domain": "example.com",
+      "status": "would-renew",
+      "reason": "missing"
+    }
+  ]
+}

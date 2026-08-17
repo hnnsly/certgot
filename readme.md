@@ -1,36 +1,28 @@
 # certgot
 
-Tiny Go app for grabbing wildcard certs for multiple domains.
-small go app for grabbing wildcard certs. It uses DNS-01, stores certs, sends notifications, setups timers.
+Wildcard ACME certificates via DNS-01. Linux + systemd.
 
-## What it does
+## Use it
 
-- issues and renews wildcard certs
-- works with multiple domains from one config
-- stores certs locally
-- can install itself with systemd setup
-- sends status to Telegram
-
-## Setup
+Download `certgot` and `config-example.yml` from the release.
 
 ```bash
-certgot --setup --config config.yml
+sudo install -m 0755 certgot /usr/local/bin/certgot
+cp config-example.yml config.yml
+$EDITOR config.yml
+$EDITOR cloudflare.env
+
+certgot doctor --config config.yml
+certgot setup --config config.yml --setup-interval 2w --yes
 ```
 
-## Run
+`setup` asks for sudo, copies config and secrets to `/etc/certgot`, then enables a systemd timer. It renews certificates automatically.
 
 ```bash
-certgot --config /etc/certgot/config.yml
+sudo certgot status --config /etc/certgot/config.yml
+systemctl list-timers certgot.timer
 ```
 
-## Version
+Need a config from scratch instead? Run `certgot init`.
 
-```bash
-certgot --version
-```
-
-## Config
-
-Use [`config-example.yml`](/Users/daniil/Code/certgot/config-example.yml) as the base.
-For provider env vars, check the lego DNS docs:
-[go-acme.github.io/lego/dns](https://go-acme.github.io/lego/dns/)
+DNS provider variables: [lego docs](https://go-acme.github.io/lego/dns/).
