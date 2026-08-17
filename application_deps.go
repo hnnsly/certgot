@@ -121,13 +121,13 @@ func (filesystemCertificateStore) Lock(storagePath string) (io.Closer, error) {
 // Notifier is the reporting transport boundary. It intentionally receives
 // already-sanitized domain results, never provider credentials.
 type Notifier interface {
-	Notify(rawURL string, results []CheckResult, operation string, duration time.Duration) error
+	Notify(config TelegramConfig, results []CheckResult, operation string, duration time.Duration) error
 }
 
 type telegramNotifier struct{}
 
-func (telegramNotifier) Notify(rawURL string, results []CheckResult, operation string, duration time.Duration) error {
-	return sendTelegramReport(rawURL, results, operation, duration)
+func (telegramNotifier) Notify(config TelegramConfig, results []CheckResult, operation string, duration time.Duration) error {
+	return sendTelegramReport(config, results, operation, duration)
 }
 
 type ApplicationDependencies struct {

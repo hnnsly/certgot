@@ -190,7 +190,11 @@ func ensureSetupPrivileges(absConfigPath, setupInterval string, confirmLong bool
 }
 
 func configEnvironmentReferences(cfg *Config) []string {
-	name, isReference, err := environmentReferenceName(telegramConfigValue(cfg))
+	telegram := telegramConfig(cfg)
+	if telegram == nil {
+		return nil
+	}
+	name, isReference, err := environmentReferenceName(telegram.BotToken)
 	if err != nil || !isReference {
 		return nil
 	}
@@ -298,7 +302,7 @@ func installSetup(configPath string, cfg *Config, interval string) error {
 	}
 
 	fmt.Println("Writing systemd unit files...")
-	telegramEnvironment := telegramConfigValue(cfg) != ""
+	telegramEnvironment := telegramConfig(cfg) != nil
 	if err := installSystemdUnits(interval, consumerGroups, telegramEnvironment); err != nil {
 		return err
 	}
@@ -487,31 +491,17 @@ func prepareManagedConfig(cfg *Config, secretsDir string, gid int, writeSecret m
 		cert.EnvFile = envPath
 		cert.Env = nil
 	}
-	telegramValue := telegramConfigValue(cfg)
-	if telegramValue != "" {
-		resolved, err := resolveEnvironmentReference(telegramValue)
+	if telegram := telegramConfig(cfg); telegram != nil {
+		resolved, err := resolveEnvironmentReference(telegram.BotToken)
 		if err != nil {
-			return nil, fmt.Errorf("resolve Telegram environment reference: %w", err)
+			return nil, fmt.Errorf("resolve Telegram bot token: %w", err)
 		}
-		if _, _, _, err := parseTelegramURL(resolved); err != nil {
-			return nil, fmt.Errorf("invalid Telegram URL: %w", err)
-		}
-		name, isReference, err := environmentReferenceName(telegramValue)
+		name, isReference, err := environmentReferenceName(telegram.BotToken)
 		if err != nil {
 			return nil, err
 		}
 		if !isReference {
-			name = "CERTGOT_TELEGRAM_URL"
-			if installed.Notifications != nil && strings.TrimSpace(installed.Notifications.TelegramURL) != "" {
-				notifications := *installed.Notifications
-				notifications.TelegramURL = "${" + name + "}"
-				installed.Notifications = &notifications
-				installed.TelegramURL = ""
-			} else {
-				installed.TelegramURL = "${" + name + "}"
-			}
-		} else if installed.Notifications != nil && strings.TrimSpace(installed.Notifications.TelegramURL) != "" {
-			installed.TelegramURL = ""
+			return nil, fmt.Errorf("Telegram bot token must be an environment reference")
 		}
 		if err := writeSecret(filepath.Join(secretsDir, filepath.Base(managedTelegramEnvPath)), map[string]string{name: resolved}, gid); err != nil {
 			return nil, err

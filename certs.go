@@ -746,14 +746,11 @@ func loadConfig(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func telegramConfigValue(cfg *Config) string {
-	if cfg == nil {
-		return ""
+func telegramConfig(cfg *Config) *TelegramConfig {
+	if cfg == nil || cfg.Notifications == nil {
+		return nil
 	}
-	if cfg.Notifications != nil && strings.TrimSpace(cfg.Notifications.TelegramURL) != "" {
-		return strings.TrimSpace(cfg.Notifications.TelegramURL)
-	}
-	return strings.TrimSpace(cfg.TelegramURL)
+	return cfg.Notifications.Telegram
 }
 
 func resolveEnvironmentReference(value string) (string, error) {
@@ -816,10 +813,22 @@ func validateConfig(cfg *Config) error {
 		}
 		cfg.ACMEDirectoryURL = directoryURL.String()
 	}
-	if _, _, err := environmentReferenceName(telegramConfigValue(cfg)); err != nil {
-		return fmt.Errorf("telegram_url: %w", err)
-	}
 	if cfg.Notifications != nil {
+		if telegram := cfg.Notifications.Telegram; telegram != nil {
+			name, isReference, err := environmentReferenceName(telegram.BotToken)
+			if err != nil {
+				return fmt.Errorf("notifications.telegram.bot_token: %w", err)
+			}
+			if !isReference || name == "" {
+				return fmt.Errorf("notifications.telegram.bot_token must be an environment reference such as ${TELEGRAM_BOT_TOKEN}")
+			}
+			if telegram.ChatID == 0 {
+				return fmt.Errorf("notifications.telegram.chat_id is required")
+			}
+			if telegram.TopicID < 0 {
+				return fmt.Errorf("notifications.telegram.topic_id must be positive")
+			}
+		}
 		allowedEvents := map[string]struct{}{"always": {}, "renewed": {}, "error": {}}
 		seenEvents := make(map[string]struct{}, len(cfg.Notifications.On))
 		for index, event := range cfg.Notifications.On {

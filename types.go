@@ -9,7 +9,6 @@ import (
 
 type Config struct {
 	Email            string              `yaml:"email"`
-	TelegramURL      string              `yaml:"telegram_url,omitempty"`
 	StoragePath      string              `yaml:"storage_path"`
 	RenewBefore      string              `yaml:"renew_before,omitempty"`
 	ACMEDirectoryURL string              `yaml:"acme_directory_url,omitempty"`
@@ -18,8 +17,14 @@ type Config struct {
 }
 
 type NotificationConfig struct {
-	On          []string `yaml:"on,omitempty"`
-	TelegramURL string   `yaml:"telegram_url,omitempty"`
+	On       []string        `yaml:"on,omitempty"`
+	Telegram *TelegramConfig `yaml:"telegram,omitempty"`
+}
+
+type TelegramConfig struct {
+	BotToken string `yaml:"bot_token"`
+	ChatID   int64  `yaml:"chat_id"`
+	TopicID  int64  `yaml:"topic_id,omitempty"`
 }
 
 type CertConfig struct {

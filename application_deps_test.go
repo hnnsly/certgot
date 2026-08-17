@@ -181,7 +181,7 @@ type fakeNotifier struct {
 	called bool
 }
 
-func (notifier *fakeNotifier) Notify(_ string, _ []CheckResult, _ string, _ time.Duration) error {
+func (notifier *fakeNotifier) Notify(_ TelegramConfig, _ []CheckResult, _ string, _ time.Duration) error {
 	notifier.called = true
 	return nil
 }
@@ -197,12 +197,15 @@ func (manager recordingServiceManager) Reload(unit string) error {
 
 func TestRunAppWithDependenciesAvoidsExternalAdapters(t *testing.T) {
 	root := testSafeTempDir(t)
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
 	configPath := filepath.Join(root, "config.yml")
 	config := `email: admin@example.com
 storage_path: ./state
-telegram_url: telegram://token@telegram?chats=1
 notifications:
   on: [always]
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: 1
 certificates:
   - domain: example.com
     provider: cloudflare
