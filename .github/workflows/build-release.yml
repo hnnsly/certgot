@@ -40,7 +40,10 @@ jobs:
           git diff --exit-code -- go.mod go.sum
 
       - name: Verify systemd units
-        run: systemd-analyze verify .github/systemd/certgot.service .github/systemd/certgot.timer
+        run: |
+          go build -o /tmp/certgot .
+          sudo install -m 0755 /tmp/certgot /usr/local/bin/certgot
+          systemd-analyze verify .github/systemd/certgot.service .github/systemd/certgot.timer
 
   integration:
     name: Pebble ACME integration
