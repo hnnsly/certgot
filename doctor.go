@@ -40,7 +40,7 @@ func runDoctor(configPath string, opts DoctorOptions, out io.Writer) error {
 	namespace := stateNamespace(ACMEOptions{DirectoryURL: cfg.ACMEDirectoryURL})
 	checks = append(checks, checkStorage(cfg.StoragePath))
 	checks = append(checks, checkAccountState(cfg.StoragePath, cfg.Email, namespace)...)
-	checks = append(checks, checkTelegram(telegramConfigValue(cfg)))
+	checks = append(checks, checkTelegram(telegramConfig(cfg)))
 	managedMode := isManagedMode(configPath, cfg)
 	if managedMode {
 		checks = append(checks, checkManagedReloadPolicy(cfg))
@@ -181,18 +181,15 @@ func checkExistingCertificate(storagePath string, cfg CertConfig, renewalWindow 
 	}
 }
 
-func checkTelegram(rawURL string) DoctorCheck {
-	if strings.TrimSpace(rawURL) == "" {
-		return DoctorCheck{Name: "telegram", Status: "warning", Message: "telegram disabled", Remediation: "set telegram_url or notifications.telegram_url if reports are required"}
+func checkTelegram(config *TelegramConfig) DoctorCheck {
+	if config == nil {
+		return DoctorCheck{Name: "telegram", Status: "warning", Message: "telegram disabled", Remediation: "set notifications.telegram if reports are required"}
 	}
-	resolved, err := resolveEnvironmentReference(rawURL)
+	_, err := resolveEnvironmentReference(config.BotToken)
 	if err != nil {
-		return DoctorCheck{Name: "telegram", Status: "error", Message: "telegram environment reference is unavailable", Remediation: err.Error()}
+		return DoctorCheck{Name: "telegram", Status: "error", Message: "telegram bot token is unavailable", Remediation: err.Error()}
 	}
-	if _, _, _, err := parseTelegramURL(resolved); err != nil {
-		return DoctorCheck{Name: "telegram", Status: "error", Message: "telegram URL invalid", Remediation: "use telegram://BOT_TOKEN@telegram?chats=CHAT_ID"}
-	}
-	return DoctorCheck{Name: "telegram", Status: "ok", Message: "telegram URL valid"}
+	return DoctorCheck{Name: "telegram", Status: "ok", Message: "telegram configuration valid"}
 }
 
 func checkACMEDirectory(directoryURL string) DoctorCheck {

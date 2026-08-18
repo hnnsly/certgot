@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -143,18 +142,21 @@ func TestInitCreatesMinimalConfigWithoutSecrets(t *testing.T) {
 	}
 }
 
-func TestInitInteractiveTelegramOnlyAcceptsEnvironmentReference(t *testing.T) {
+func TestInitCreatesExplicitTelegramConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.yml")
 	var output bytes.Buffer
-	err := runInit(initOptions{
-		ConfigPath:  configPath,
-		Email:       "admin@example.com",
-		Domain:      "example.com",
-		Provider:    "cloudflare",
-		EnvFile:     "./cloudflare.env",
-		Permissions: "0640",
-		StoragePath: "./state",
-	}, strings.NewReader("www-data\n${TELEGRAM_URL}\n"), &output)
+	err := runCLI([]string{
+		"init", "--config", configPath,
+		"--email", "admin@example.com",
+		"--domain", "example.com",
+		"--provider", "cloudflare",
+		"--env-file", "./cloudflare.env",
+		"--group", "www-data",
+		"--storage-path", "./state",
+		"--telegram-bot-token-env", "TELEGRAM_BOT_TOKEN",
+		"--telegram-chat-id", "-100123",
+		"--telegram-topic-id", "42",
+	}, &output, &output)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,21 +164,50 @@ func TestInitInteractiveTelegramOnlyAcceptsEnvironmentReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "${TELEGRAM_URL}") {
-		t.Fatalf("environment reference missing from generated config: %s", data)
+	for _, want := range []string{"bot_token: ${TELEGRAM_BOT_TOKEN}", "chat_id: -100123", "topic_id: 42"} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("generated config missing %q: %s", want, data)
+		}
 	}
 
 	err = runInit(initOptions{
-		ConfigPath:  filepath.Join(t.TempDir(), "config.yml"),
-		Email:       "admin@example.com",
-		Domain:      "example.com",
-		Provider:    "cloudflare",
-		EnvFile:     "./cloudflare.env",
-		Group:       "www-data",
-		Permissions: "0640",
-		StoragePath: "./state",
-	}, strings.NewReader("telegram://secret@telegram?chats=1\n"), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "terminal echo") {
-		t.Fatalf("expected Telegram secret prompt rejection, got %v", err)
+		ConfigPath:       filepath.Join(t.TempDir(), "config.yml"),
+		Email:            "admin@example.com",
+		Domain:           "example.com",
+		Provider:         "cloudflare",
+		EnvFile:          "./cloudflare.env",
+		Group:            "www-data",
+		Permissions:      "0640",
+		StoragePath:      "./state",
+		TelegramTokenEnv: "BAD-NAME",
+		TelegramChatID:   1,
+	}, strings.NewReader(""), &output)
+	if err == nil || !strings.Contains(err.Error(), "environment variable name") {
+		t.Fatalf("expected invalid Telegram environment name, got %v", err)
+	}
+}
+
+func TestDefaultConfigPathHonorsEnvironment(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "certgot.yml")
+	t.Setenv("CERTGOT_CONFIG", want)
+	if got := defaultConfigPath(); got != want {
+		t.Fatalf("default config path = %q, want %q", got, want)
+	}
+}
+
+func TestLegacyTelegramURLIsRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	data := `email: admin@example.com
+storage_path: /tmp/state
+telegram_url: telegram://legacy
+certificates:
+  - domain: example.com
+    provider: cloudflare
+`
+	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadConfig(path); err == nil || !strings.Contains(err.Error(), "telegram_url") {
+		t.Fatalf("expected legacy telegram_url rejection, got %v", err)
 	}
 }

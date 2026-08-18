@@ -20,7 +20,9 @@ type initOptions struct {
 	EnvFile          string
 	Group            string
 	Permissions      string
-	TelegramURL      string
+	TelegramTokenEnv string
+	TelegramChatID   int64
+	TelegramTopicID  int64
 	StoragePath      string
 	ACMEDirectoryURL string
 	Force            bool
@@ -30,15 +32,17 @@ func initCommandCLI(args []string, in io.Reader, out, stderr io.Writer) error {
 	flags := flag.NewFlagSet("init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	opts := initOptions{}
-	flags.StringVar(&opts.ConfigPath, "config", "config.yml", "Path for the new config")
+	flags.StringVar(&opts.ConfigPath, "config", defaultConfigPath(), "Path for the new config")
 	flags.StringVar(&opts.Email, "email", "", "ACME email")
 	flags.StringVar(&opts.Domain, "domain", "", "Base domain")
 	flags.StringVar(&opts.Provider, "provider", "", "DNS provider")
 	flags.StringVar(&opts.EnvFile, "env-file", "", "Provider env-file path")
 	flags.StringVar(&opts.Group, "group", "", "Certificate group")
 	flags.StringVar(&opts.Permissions, "permissions", "0640", "Certificate permissions")
-	flags.StringVar(&opts.TelegramURL, "telegram-url", "", "Optional Telegram URL or ${ENV_VAR}")
-	flags.StringVar(&opts.StoragePath, "storage-path", "./certgot-data", "Certificate state path")
+	flags.StringVar(&opts.TelegramTokenEnv, "telegram-bot-token-env", "", "Environment variable containing the Telegram bot token")
+	flags.Int64Var(&opts.TelegramChatID, "telegram-chat-id", 0, "Telegram chat ID")
+	flags.Int64Var(&opts.TelegramTopicID, "telegram-topic-id", 0, "Optional Telegram topic ID")
+	flags.StringVar(&opts.StoragePath, "storage-path", defaultStoragePath(), "Certificate state path")
 	flags.StringVar(&opts.ACMEDirectoryURL, "acme-directory-url", "", "Optional ACME directory URL for local testing")
 	flags.BoolVar(&opts.Force, "force", false, "Overwrite an existing config")
 	if err := flags.Parse(args); err != nil {
@@ -83,15 +87,6 @@ func runInit(opts initOptions, in io.Reader, out io.Writer) error {
 			return err
 		}
 	}
-	if opts.TelegramURL == "" {
-		opts.TelegramURL, err = promptValue(reader, out, "Telegram environment reference (optional, e.g. ${TELEGRAM_URL}): ")
-		if err != nil {
-			return err
-		}
-		if strings.TrimSpace(opts.TelegramURL) != "" && !isEnvironmentReference(opts.TelegramURL) {
-			return fmt.Errorf("telegram prompt accepts only ${ENV_VAR}; do not enter bot tokens in terminal echo")
-		}
-	}
 	normalizedDomain, err := normalizeDomain(opts.Domain)
 	if err != nil {
 		return err
@@ -103,7 +98,6 @@ func runInit(opts initOptions, in io.Reader, out io.Writer) error {
 	}
 	cfg := Config{
 		Email:            strings.TrimSpace(opts.Email),
-		TelegramURL:      strings.TrimSpace(opts.TelegramURL),
 		StoragePath:      opts.StoragePath,
 		ACMEDirectoryURL: strings.TrimSpace(opts.ACMEDirectoryURL),
 		Certificates: []CertConfig{{
@@ -114,6 +108,23 @@ func runInit(opts initOptions, in io.Reader, out io.Writer) error {
 			Group:       strings.TrimSpace(opts.Group),
 		}},
 	}
+	telegramEnv := strings.TrimSpace(opts.TelegramTokenEnv)
+	if telegramEnv != "" || opts.TelegramChatID != 0 || opts.TelegramTopicID != 0 {
+		if !validEnvironmentName(telegramEnv) {
+			return fmt.Errorf("--telegram-bot-token-env must be a valid environment variable name")
+		}
+		if opts.TelegramChatID == 0 {
+			return fmt.Errorf("--telegram-chat-id is required when Telegram is configured")
+		}
+		cfg.Notifications = &NotificationConfig{
+			On: []string{"renewed", "error"},
+			Telegram: &TelegramConfig{
+				BotToken: "${" + telegramEnv + "}",
+				ChatID:   opts.TelegramChatID,
+				TopicID:  opts.TelegramTopicID,
+			},
+		}
+	}
 	if err := validateConfig(&cfg); err != nil {
 		return err
 	}
@@ -121,7 +132,7 @@ func runInit(opts initOptions, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(opts.ConfigPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(opts.ConfigPath), 0700); err != nil {
 		return err
 	}
 	if err := writeFileAtomic(opts.ConfigPath, data, 0600); err != nil {
@@ -131,11 +142,6 @@ func runInit(opts initOptions, in io.Reader, out io.Writer) error {
 		return err
 	}
 	return nil
-}
-
-func isEnvironmentReference(value string) bool {
-	value = strings.TrimSpace(value)
-	return len(value) > 3 && strings.HasPrefix(value, "${") && strings.HasSuffix(value, "}")
 }
 
 func promptValue(reader *bufio.Reader, out io.Writer, prompt string) (string, error) {

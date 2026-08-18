@@ -263,14 +263,17 @@ func TestManagedSetupRejectsReloadUnits(t *testing.T) {
 }
 
 func TestTelegramReferenceRemainsRawAndMovesToManagedEnvironment(t *testing.T) {
-	t.Setenv("TELEGRAM_URL", "telegram://secret-token@telegram?chats=123")
+	t.Setenv("TELEGRAM_BOT_TOKEN", "secret-token")
 	root := t.TempDir()
 	configPath := filepath.Join(root, "config.yml")
 	data := `email: admin@example.com
 storage_path: ./state
 notifications:
   on: [error]
-  telegram_url: ${TELEGRAM_URL}
+  telegram:
+    bot_token: ${TELEGRAM_BOT_TOKEN}
+    chat_id: -100123
+    topic_id: 42
 certificates:
   - domain: example.com
     provider: cloudflare
@@ -282,7 +285,7 @@ certificates:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := telegramConfigValue(cfg); got != "${TELEGRAM_URL}" {
+	if got := telegramConfig(cfg).BotToken; got != "${TELEGRAM_BOT_TOKEN}" {
 		t.Fatalf("raw reference was resolved during load: %q", got)
 	}
 	var telegramValues map[string]string
@@ -295,14 +298,14 @@ certificates:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if telegramValues["TELEGRAM_URL"] != "telegram://secret-token@telegram?chats=123" {
+	if telegramValues["TELEGRAM_BOT_TOKEN"] != "secret-token" {
 		t.Fatalf("managed Telegram environment not written: %#v", telegramValues)
 	}
 	marshaled, err := yaml.Marshal(installed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(marshaled), "secret-token") || !strings.Contains(string(marshaled), "${TELEGRAM_URL}") {
+	if strings.Contains(string(marshaled), "secret-token") || !strings.Contains(string(marshaled), "${TELEGRAM_BOT_TOKEN}") || !strings.Contains(string(marshaled), "chat_id: -100123") {
 		t.Fatalf("installed config leaked or lost reference: %s", marshaled)
 	}
 	service, err := renderTpl(serviceTpl, map[string]string{
@@ -317,16 +320,16 @@ certificates:
 }
 
 func TestTelegramReferenceResolutionAndDoctorMissing(t *testing.T) {
-	t.Setenv("TELEGRAM_URL", "telegram://token@telegram?chats=123")
-	resolved, err := resolveEnvironmentReference("${TELEGRAM_URL}")
-	if err != nil || resolved != "telegram://token@telegram?chats=123" {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "token")
+	resolved, err := resolveEnvironmentReference("${TELEGRAM_BOT_TOKEN}")
+	if err != nil || resolved != "token" {
 		t.Fatalf("resolved=%q err=%v", resolved, err)
 	}
-	if err := os.Unsetenv("TELEGRAM_URL"); err != nil {
+	if err := os.Unsetenv("TELEGRAM_BOT_TOKEN"); err != nil {
 		t.Fatal(err)
 	}
-	check := checkTelegram("${TELEGRAM_URL}")
-	if check.Status != "error" || !strings.Contains(check.Remediation, "TELEGRAM_URL is not available") {
+	check := checkTelegram(&TelegramConfig{BotToken: "${TELEGRAM_BOT_TOKEN}", ChatID: 123})
+	if check.Status != "error" || !strings.Contains(check.Remediation, "TELEGRAM_BOT_TOKEN is not available") {
 		t.Fatalf("unexpected doctor check: %#v", check)
 	}
 	if _, err := resolveEnvironmentReference("${BAD-NAME}"); err == nil {
@@ -334,28 +337,15 @@ func TestTelegramReferenceResolutionAndDoctorMissing(t *testing.T) {
 	}
 }
 
-func TestPlainTelegramURLIsScrubbedFromManagedYAML(t *testing.T) {
-	secret := "telegram://plain-secret@telegram?chats=123"
-	cfg := &Config{TelegramURL: secret, Certificates: []CertConfig{{Domain: "example.com"}}}
-	var values map[string]string
-	installed, err := prepareManagedConfig(cfg, managedSecretsDir, 1, func(path string, got map[string]string, _ int) error {
-		if path == managedTelegramEnvPath {
-			values = got
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestTelegramConfigRejectsPlainBotToken(t *testing.T) {
+	cfg := &Config{
+		Email: "admin@example.com", StoragePath: "/tmp/state",
+		Notifications: &NotificationConfig{Telegram: &TelegramConfig{BotToken: "plain-secret", ChatID: 123}},
+		Certificates:  []CertConfig{{Domain: "example.com", Provider: "cloudflare"}},
 	}
-	data, err := yaml.Marshal(installed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "plain-secret") || installed.TelegramURL != "${CERTGOT_TELEGRAM_URL}" {
-		t.Fatalf("plaintext URL was not scrubbed: %s", data)
-	}
-	if values["CERTGOT_TELEGRAM_URL"] != secret {
-		t.Fatalf("managed secret missing: %#v", values)
+	err := validateConfig(cfg)
+	if err == nil || !strings.Contains(err.Error(), "must be an environment reference") {
+		t.Fatalf("expected plaintext token rejection, got %v", err)
 	}
 }
 

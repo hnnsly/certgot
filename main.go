@@ -113,7 +113,7 @@ type setupOptions struct {
 func parseSetupOptions(args []string, stderr io.Writer) (setupOptions, error) {
 	flags := flag.NewFlagSet("setup", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	configPath := flags.String("config", "config.yaml", "Path to config")
+	configPath := flags.String("config", defaultConfigPath(), "Path to config")
 	configShort := flags.String("c", "", "Path to config")
 	interval := flags.String("setup-interval", "", "Timer interval, for example 2w")
 	nonInteractive := flags.Bool("non-interactive", false, "Require explicit flags; do not read stdin or run sudo")
@@ -203,8 +203,8 @@ func parseCommonFlags(name string, args []string, stderr io.Writer, register fun
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	common := commonCLIOptions{}
-	flags.StringVar(&common.ConfigPath, "config", "config.yaml", "Path to config")
-	flags.StringVar(&common.ConfigPath, "c", "config.yaml", "Path to config")
+	flags.StringVar(&common.ConfigPath, "config", defaultConfigPath(), "Path to config")
+	flags.StringVar(&common.ConfigPath, "c", defaultConfigPath(), "Path to config")
 	output := flags.String("output", "text", "Output format: text or json")
 	color := flags.String("color", "auto", "Color mode: auto, always, or never")
 	flags.BoolVar(&common.Quiet, "quiet", false, "Suppress human-readable output")

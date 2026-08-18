@@ -27,7 +27,7 @@ func (doer *recordingHTTPDoer) Do(request *http.Request) (*http.Response, error)
 func TestTelegramTransportAndMessageBuilderAreInjectable(t *testing.T) {
 	doer := &recordingHTTPDoer{}
 	results := []CheckResult{{Type: ResultError, Domain: "example.com", Error: io.EOF}}
-	err := sendTelegramReportWith("telegram://token@telegram?chats=123", results, "renew", 2*time.Second, doer, telegramMessageBuilder{})
+	err := sendTelegramReportWith(TelegramConfig{BotToken: "token", ChatID: -100123, TopicID: 42}, results, "renew", 2*time.Second, doer, telegramMessageBuilder{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,9 @@ func TestTelegramTransportAndMessageBuilderAreInjectable(t *testing.T) {
 	var payload map[string]any
 	if err := json.Unmarshal(doer.body, &payload); err != nil {
 		t.Fatal(err)
+	}
+	if payload["chat_id"] != float64(-100123) || payload["message_thread_id"] != float64(42) {
+		t.Fatalf("unexpected Telegram target: %#v", payload)
 	}
 	message, _ := payload["text"].(string)
 	for _, want := range []string{"*Operation:* renew", "*Duration:* 2s", "Fix: certgot renew --domain example.com"} {

@@ -140,16 +140,20 @@ func runAppWithDependencies(configPath string, opts RunOptions, out io.Writer, l
 	}
 	notificationStatus := ""
 	if shouldNotify(cfg, results) {
-		telegramURL, resolveErr := resolveEnvironmentReference(telegramConfigValue(cfg))
+		telegram := *telegramConfig(cfg)
+		resolvedToken, resolveErr := resolveEnvironmentReference(telegram.BotToken)
 		if resolveErr != nil {
 			notificationStatus = "failed"
 			runErrors = append(runErrors, fmt.Errorf("telegram notification configuration failed: %w", resolveErr))
-		} else if err := deps.Notifier.Notify(telegramURL, results, operation, deps.Clock.Now().Sub(started)); err != nil {
-			notificationStatus = "failed"
-			runErrors = append(runErrors, fmt.Errorf("telegram notification failed: %w", err))
 		} else {
-			notificationStatus = "sent"
-			logger.Info("report sent", "operation", operation)
+			telegram.BotToken = resolvedToken
+			if err := deps.Notifier.Notify(telegram, results, operation, deps.Clock.Now().Sub(started)); err != nil {
+				notificationStatus = "failed"
+				runErrors = append(runErrors, fmt.Errorf("telegram notification failed: %w", err))
+			} else {
+				notificationStatus = "sent"
+				logger.Info("report sent", "operation", operation)
+			}
 		}
 	}
 	runDuration := deps.Clock.Now().Sub(started)
@@ -222,11 +226,8 @@ func buildRunReport(operation string, results []CheckResult, reloads []ReloadRec
 }
 
 func shouldNotify(cfg *Config, results []CheckResult) bool {
-	if cfg == nil || telegramConfigValue(cfg) == "" {
+	if telegramConfig(cfg) == nil {
 		return false
-	}
-	if cfg.Notifications == nil {
-		return true
 	}
 	if len(cfg.Notifications.On) == 0 {
 		return false

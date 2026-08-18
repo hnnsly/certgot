@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -73,39 +72,30 @@ func formatOneLineMarkdown(r CheckResult) string {
 	return ""
 }
 
-func sendTelegramDirect(rawURL string, results []CheckResult) error {
-	return sendTelegramReport(rawURL, results, "run", 0)
+func sendTelegramReport(config TelegramConfig, results []CheckResult, operation string, duration time.Duration) error {
+	return sendTelegramReportWith(config, results, operation, duration, telegramHTTPClient, telegramMessageBuilder{})
 }
 
-func sendTelegramReport(rawURL string, results []CheckResult, operation string, duration time.Duration) error {
-	return sendTelegramReportWith(rawURL, results, operation, duration, telegramHTTPClient, telegramMessageBuilder{})
-}
-
-func sendTelegramReportWith(rawURL string, results []CheckResult, operation string, duration time.Duration, transport HTTPDoer, builder NotificationMessageBuilder) error {
-	token, chatID, threadID, err := parseTelegramURL(rawURL)
-	if err != nil {
-		return err
-	}
-
+func sendTelegramReportWith(config TelegramConfig, results []CheckResult, operation string, duration time.Duration, transport HTTPDoer, builder NotificationMessageBuilder) error {
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = "unknown"
 	}
 
 	payload := map[string]interface{}{
-		"chat_id":    chatID,
+		"chat_id":    config.ChatID,
 		"text":       builder.Build(hostname, operation, results, duration),
 		"parse_mode": "Markdown",
 	}
-	if threadID != "" {
-		payload["message_thread_id"] = threadID
+	if config.TopicID != 0 {
+		payload["message_thread_id"] = config.TopicID
 	}
 
 	jsonBody, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal telegram request: %w", err)
 	}
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", config.BotToken)
 
 	request, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -144,31 +134,4 @@ func (telegramMessageBuilder) Build(hostname, operation string, results []CheckR
 		}
 	}
 	return sb.String()
-}
-
-func parseTelegramURL(rawURL string) (token, chatID, threadID string, err error) {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return "", "", "", fmt.Errorf("invalid telegram url: %w", err)
-	}
-	if u.Scheme != "telegram" || u.User == nil || strings.TrimSpace(u.User.String()) == "" {
-		return "", "", "", fmt.Errorf("telegram url must contain a token")
-	}
-
-	token = u.User.String()
-	chatParam := u.Query().Get("chats")
-	if chatParam == "" {
-		return "", "", "", fmt.Errorf("missing 'chats' query param in telegram url")
-	}
-
-	parts := strings.Split(chatParam, ":")
-	if len(parts) > 2 || strings.TrimSpace(parts[0]) == "" || (len(parts) == 2 && strings.TrimSpace(parts[1]) == "") {
-		return "", "", "", fmt.Errorf("invalid chats query param")
-	}
-	chatID = parts[0]
-	if len(parts) > 1 {
-		threadID = parts[1]
-	}
-
-	return token, chatID, threadID, nil
 }

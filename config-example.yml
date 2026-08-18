@@ -1,10 +1,13 @@
 # ACME account email.
 email: "admin@example.com"
 
-# Optional reports. Use a process reference instead of putting the token here.
+# Optional reports. Keep the bot token in an environment variable.
 # notifications:
 #   on: [renewed, error]
-#   telegram_url: "${TELEGRAM_URL}"
+#   telegram:
+#     bot_token: "${TELEGRAM_BOT_TOKEN}"
+#     chat_id: -1001234567890
+#     topic_id: 42 # optional
 
 # Runtime state. Managed systemd setup replaces this with /var/lib/certgot.
 storage_path: "/var/lib/certgot"
